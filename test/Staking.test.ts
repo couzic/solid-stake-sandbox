@@ -3,6 +3,7 @@ import { SignerWithAddress } from "@nomiclabs/hardhat-ethers/signers";
 import chai from "chai";
 import chaiAsPromised from "chai-as-promised";
 import { ethers, network } from "hardhat";
+import { range } from "ramda";
 
 import { Bank, CAKE, PEUPLE, Staking, SwapPool } from "../typechain";
 
@@ -353,14 +354,26 @@ describe("PEUPLE", () => {
       beforeEach(async () => {
         await buyAndStake(holder_1, oneBillion);
       });
-      it("redistributes all cake dividends to holder", async () => {
-        await cake.connect(cakeOwner).transfer(staking.address, oneThousand);
-        await days(2);
-        await createNewBlock();
-        const dividends = await staking
-          .connect(holder_1)
-          .computeHolderDividends();
-        expect(dividends).to.equal(oneBillion);
+      describe("for one thousand cake dividends", () => {
+        beforeEach(async () => {
+          await cake.connect(cakeOwner).transfer(staking.address, oneThousand);
+          await days(2);
+          await createNewBlock();
+        });
+        it("redistributes all dividends to holder", async () => {
+          const dividends = await staking
+            .connect(holder_1)
+            .computeHolderDividends();
+          expect(dividends).to.equal(oneBillion);
+        });
+        it("holder can withdraw dividends", async () => {
+          const dividends = await staking
+            .connect(holder_1)
+            .withdrawAllRewardsAndDividends();
+          expect(dividends).to.equal(oneBillion);
+          const balance = await peuple.balanceOf(holder_1.address);
+          expect(balance).to.equal(oneBillion);
+        });
       });
       it("redistributes all peuple rewards to holder", async () => {
         await peuple.connect(peupleOwner).approve(staking.address, oneBillion);
@@ -390,6 +403,23 @@ describe("PEUPLE", () => {
               await staking.connect(holder_1).computeHolderRewards()
             ).to.equal(oneBillion.mul(2));
           });
+        });
+      });
+      describe("when second holder buys one billion peuple, but does not stake", () => {
+        beforeEach(async () => {
+          await buyAndStake(holder_2, oneBillion);
+        });
+        it("distributes dividends evenly", async () => {
+          await cake.connect(cakeOwner).transfer(staking.address, oneThousand);
+          await days(2);
+          await createNewBlock();
+          const dividends_1 = await staking
+            .connect(holder_1)
+            .computeHolderDividends();
+          const dividends_2 = await staking
+            .connect(holder_2)
+            .computeHolderDividends();
+          expect(dividends_1).to.equal(dividends_2);
         });
       });
       describe("when second holder buys and stakes for 2 months", () => {
@@ -509,16 +539,243 @@ describe("PEUPLE", () => {
           expect(rewards_1).to.equal(rewards_2.mul(2));
           expect(rewards_1).to.equal(oneThousand.mul(1_000_000).mul(2).div(3));
           expect(rewards_2).to.equal(oneThousand.mul(1_000_000).mul(1).div(3));
-          console.log(rewards_1.add(rewards_2).toString());
-          console.log(
-            await staking.currentTotalStake().then((_) => _.toString())
-          );
-          console.log(
-            await staking.currentTotalPonderedStake().then((_) => _.toString())
-          );
-          console.log(
-            await staking.currentTotalOwnedPeuple().then((_) => _.toString())
-          );
+        });
+        describe("when block is created but then first holder gets his social bonus back to zero", () => {
+          beforeEach(async () => {
+            await days(2);
+            await sendCakeRewards(oneThousand);
+            await staking
+              .connect(stakingOwner)
+              .setHolderSocialPercentBonus(holder_1.address, 0);
+          });
+          it("still redistributes more rewards to first holder", async () => {
+            const rewards_1 = await staking
+              .connect(holder_1)
+              .computeHolderRewards();
+            const rewards_2 = await staking
+              .connect(holder_2)
+              .computeHolderRewards();
+            expect(rewards_1).to.equal(rewards_2.mul(2));
+            expect(rewards_1).to.equal(
+              oneThousand.mul(1_000_000).mul(2).div(3)
+            );
+            expect(rewards_2).to.equal(
+              oneThousand.mul(1_000_000).mul(1).div(3)
+            );
+          });
+        });
+      });
+    });
+
+    describe("when single holder buys one billion and stakes it in 20 parts", () => {
+      beforeEach(async () => {
+        await buyPeuple(holder_1, oneBillion);
+        for await (let i of range(0, 20)) {
+          await stakePeuple(holder_1, oneBillion.div(20));
+        }
+      });
+      describe("when 20 blocks with dividends are created", () => {
+        beforeEach(async () => {
+          for await (let i of range(0, 20)) {
+            await cake.connect(cakeOwner).transfer(staking.address, ether(10));
+            await days(2);
+            await createNewBlock();
+          }
+        });
+        it("runs out of gas when computing dividends", async () => {
+          expect(
+            staking.connect(holder_1).computeHolderDividends()
+          ).to.be.rejectedWith(Error);
+        });
+        describe("when dividends are precomputed once", () => {
+          beforeEach(async () => {
+            await staking.connect(holder_1).precomputeAllRewardsAndDividends();
+          });
+          it("computes dividends", async () => {
+            const dividends = await staking
+              .connect(holder_1)
+              .computeHolderDividends();
+            expect(dividends).to.equal(
+              BigNumber.from("200000000000000000000000000")
+            );
+          });
+        });
+        describe("when dividends are precomputed for first ten selected stakes", () => {
+          beforeEach(async () => {
+            for await (let i of range(0, 10)) {
+              await staking
+                .connect(holder_1)
+                .precomputeRewardsAndDividendsForStake(i);
+            }
+          });
+          it("computes dividends", async () => {
+            const dividends = await staking
+              .connect(holder_1)
+              .computeHolderDividends();
+            expect(dividends).to.equal(
+              BigNumber.from("200000000000000000000000000")
+            );
+          });
+        });
+      });
+      describe("when 20 blocks with rewards are created", () => {
+        beforeEach(async () => {
+          for await (let i of range(0, 20)) {
+            await peuple
+              .connect(peupleOwner)
+              .transfer(staking.address, oneMillion.mul(10));
+            await days(2);
+            await createNewBlock();
+          }
+        });
+        it("runs out of gas when computing dividends", async () => {
+          expect(
+            staking.connect(holder_1).computeHolderRewards()
+          ).to.be.rejectedWith(Error);
+        });
+        describe("when rewards are precomputed thrice", () => {
+          beforeEach(async () => {
+            await staking.connect(holder_1).precomputeAllRewardsAndDividends();
+            await staking.connect(holder_1).precomputeAllRewardsAndDividends();
+            await staking.connect(holder_1).precomputeAllRewardsAndDividends();
+          });
+          it("computes rewards", async () => {
+            const rewards = await staking
+              .connect(holder_1)
+              .computeHolderRewards();
+            expect(rewards).to.equal(oneMillion.mul(10).mul(20));
+          });
+          describe("when another block is created", () => {
+            beforeEach(async () => {
+              await peuple
+                .connect(peupleOwner)
+                .transfer(staking.address, oneMillion.mul(10));
+              await days(2);
+              await createNewBlock();
+            });
+            it("computes rewards after single precomputation", async () => {
+              await staking
+                .connect(holder_1)
+                .precomputeAllRewardsAndDividends();
+              const rewards = await staking
+                .connect(holder_1)
+                .computeHolderRewards();
+              expect(rewards).to.equal(oneMillion.mul(10).mul(21));
+            });
+          });
+        });
+      });
+      describe("when second holder buys and stakes one billion, but first holder has better social score", () => {
+        beforeEach(async () => {
+          await buyAndStake(holder_2, oneBillion);
+          await staking
+            .connect(stakingOwner)
+            .setHolderSocialPercentBonus(holder_1.address, 100);
+        });
+        describe("when 10 blocks with rewards are created", () => {
+          beforeEach(async () => {
+            for await (let i of range(0, 10)) {
+              await peuple
+                .connect(peupleOwner)
+                .transfer(staking.address, oneMillion.mul(10));
+              await days(2);
+              await createNewBlock();
+            }
+          });
+          it("precomputes rewards with social bonus", async () => {
+            await staking.connect(holder_1).precomputeAllRewardsAndDividends();
+            await staking.connect(holder_1).precomputeAllRewardsAndDividends();
+            const rewards_1 = await staking
+              .connect(holder_1)
+              .computeHolderRewards();
+            const rewards_2 = await staking
+              .connect(holder_2)
+              .computeHolderRewards();
+            expect(rewards_1).to.equal(
+              BigNumber.from("66666666666666666666666400")
+            );
+            expect(rewards_2).to.equal(
+              BigNumber.from("33333333333333333333333330")
+            );
+          });
+          describe("when first holder gets his social score back to zero before another 10 blocks are created", () => {
+            beforeEach(async () => {
+              await staking
+                .connect(stakingOwner)
+                .setHolderSocialPercentBonus(holder_1.address, 0);
+              for await (let i of range(0, 10)) {
+                await peuple
+                  .connect(peupleOwner)
+                  .transfer(staking.address, oneMillion.mul(10));
+                await days(2);
+                await createNewBlock();
+              }
+            });
+            it("precomputes rewards with social bonus", async () => {
+              for await (let i of range(0, 3)) {
+                await staking
+                  .connect(holder_1)
+                  .precomputeAllRewardsAndDividends();
+              }
+              const rewards_1 = await staking
+                .connect(holder_1)
+                .computeHolderRewards();
+              const rewards_2 = await staking
+                .connect(holder_2)
+                .computeHolderRewards();
+              expect(rewards_1).to.equal(
+                BigNumber.from("66666666666666666666666400").add(
+                  oneMillion.mul(50)
+                )
+              );
+              expect(rewards_2).to.equal(
+                BigNumber.from("33333333333333333333333330").add(
+                  oneMillion.mul(50)
+                )
+              );
+            });
+          });
+        });
+      });
+    });
+    describe("when single holder buys one billion and stakes it for 3 months in 20 parts", () => {
+      beforeEach(async () => {
+        await buyPeuple(holder_1, oneBillion);
+        for await (let i of range(0, 20)) {
+          await stakePeuple(holder_1, oneBillion.div(20), 3);
+        }
+      });
+      describe("when second holder buys and stakes one billion for one month only", () => {
+        beforeEach(async () => {
+          await buyAndStake(holder_2, oneBillion);
+        });
+        describe("when 20 blocks with rewards are created", () => {
+          beforeEach(async () => {
+            for await (let i of range(0, 20)) {
+              await peuple
+                .connect(peupleOwner)
+                .transfer(staking.address, oneMillion.mul(10));
+              await days(2);
+              await createNewBlock();
+            }
+          });
+          it("precomputes rewards with time bonus", async () => {
+            await staking.connect(holder_1).precomputeAllRewardsAndDividends();
+            await staking.connect(holder_1).precomputeAllRewardsAndDividends();
+            await staking.connect(holder_1).precomputeAllRewardsAndDividends();
+            const rewards = await staking
+              .connect(holder_1)
+              .computeHolderRewards();
+            expect(rewards).to.equal(
+              BigNumber.from("133333333333333333333333200")
+            );
+            const rewards_2 = await staking
+              .connect(holder_2)
+              .computeHolderRewards();
+            expect(rewards_2).to.equal(
+              BigNumber.from("66666666666666666666666660")
+            );
+          });
         });
       });
     });

@@ -37,6 +37,9 @@ contract Staking is Ownable {
         uint256 timeBonusPonderedAmount;
         uint256 startBlock;
         uint256 blockedUntil;
+        uint256 precomputedUntilBlock;
+        uint256 precomputedRewards;
+        uint256 precomputedDividends;
     }
 
     struct HolderSocial {
@@ -140,7 +143,10 @@ contract Staking is Ownable {
                 amount,
                 timeBonusPonderedAmount,
                 currentBlockNumber,
-                months
+                months,
+                currentBlockNumber, // precomputedUntilBlock
+                0, // precomputedRewards
+                0 //precomputedDividends
             )
         );
         currentTotalStake += amount;
@@ -151,8 +157,6 @@ contract Staking is Ownable {
         IERC20(peuple).transferFrom(msg.sender, address(this), amount);
 
         ensureHolderSocialsInitialized(holderSocials[msg.sender]);
-
-        // TODO update currentTotalPonderedStake with social rewards
 
         createNewBlock();
     }
@@ -221,11 +225,7 @@ contract Staking is Ownable {
             );
     }
 
-    function computeHolderDividendsAndRewards()
-        external
-        view
-        returns (uint256)
-    {
+    function computeHolderDividendsAndRewards() public view returns (uint256) {
         return
             computeHolderDividendsOrRewardsOrBoth(
                 DividendsOrRewardsOrBoth.Both,
@@ -291,6 +291,10 @@ contract Staking is Ownable {
     ) internal view returns (uint256) {
         // TODO test when not a staker
         uint256 result = 0;
+        (activeStakes, result) = getPrecomputedRewardsAndDividends(
+            filter,
+            activeStakes
+        );
         uint256 activeStakeCount = activeStakes.length;
         uint256 socialIndex = socials.length - 1;
         HolderSocial memory social = socials[socialIndex];
@@ -349,6 +353,113 @@ contract Staking is Ownable {
         return result;
     }
 
+    function getPrecomputedRewardsAndDividends(
+        DividendsOrRewardsOrBoth filter,
+        HolderStake[] memory stakes
+    ) internal view returns (HolderStake[] memory, uint256) {
+        uint256 result = 0;
+        HolderStake[] memory notPrecomputedStakes = new HolderStake[](
+            stakes.length
+        );
+        uint256 notPrecomputedStakesCount = 0;
+        for (uint256 i = 0; i < stakes.length; i++) {
+            HolderStake memory focusedStake = stakes[i];
+            if (focusedStake.precomputedUntilBlock != currentBlockNumber) {
+                notPrecomputedStakes[notPrecomputedStakesCount] = focusedStake;
+                notPrecomputedStakesCount++;
+            } else {
+                if (filter != DividendsOrRewardsOrBoth.Rewards) {
+                    result += focusedStake.precomputedDividends;
+                }
+                if (filter != DividendsOrRewardsOrBoth.Dividends) {
+                    result += focusedStake.precomputedRewards;
+                }
+            }
+        }
+        HolderStake[] memory returnedStakes = new HolderStake[](
+            notPrecomputedStakesCount
+        );
+        for (uint256 i = 0; i < notPrecomputedStakesCount; i++) {
+            returnedStakes[i] = notPrecomputedStakes[i];
+        }
+        return (returnedStakes, result);
+    }
+
+    function precomputeAllRewardsAndDividends() external returns (bool) {
+        HolderStake[] storage stakes = holderStakes[msg.sender];
+        bool hasGasLeft = true;
+        for (uint256 stakeIndex = 0; stakeIndex < stakes.length; stakeIndex++) {
+            HolderStake storage focusedStake = holderStakes[msg.sender][
+                stakeIndex
+            ];
+            hasGasLeft = precomputeRewardsAndDividends(focusedStake);
+            if (hasGasLeft == false) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    function precomputeRewardsAndDividendsForStake(uint256 stakeIndex)
+        external
+        returns (bool)
+    {
+        return
+            precomputeRewardsAndDividends(holderStakes[msg.sender][stakeIndex]);
+    }
+
+    function precomputeRewardsAndDividends(HolderStake storage holderStake)
+        internal
+        returns (bool)
+    {
+        // TODO Delete outdated socials
+        HolderSocial[] memory socials = holderSocials[msg.sender];
+        uint256 socialIndex = 0;
+        HolderSocial memory social = socials[socialIndex];
+        uint256 blockWithNextSocialIndex = currentBlockNumber;
+        if (socialIndex + 1 < socials.length) {
+            blockWithNextSocialIndex = socials[socialIndex + 1].blockNumber;
+        }
+        while (holderStake.precomputedUntilBlock < currentBlockNumber) {
+            DayBlock storage focusedBlock = dayBlocks[
+                holderStake.precomputedUntilBlock
+            ];
+
+            // Dividends
+            holderStake.precomputedDividends +=
+                (focusedBlock.dividends * holderStake.amount) /
+                focusedBlock.totalStake;
+
+            // Base rewards + time bonus
+            holderStake.precomputedRewards +=
+                (focusedBlock.rewards * holderStake.timeBonusPonderedAmount) /
+                focusedBlock.totalPonderedStake;
+
+            // Social bonus
+            while (
+                holderStake.precomputedUntilBlock == blockWithNextSocialIndex
+            ) {
+                socialIndex++;
+                social = socials[socialIndex];
+                if (socialIndex + 1 == socials.length) {
+                    blockWithNextSocialIndex = currentBlockNumber;
+                } else {
+                    blockWithNextSocialIndex = socials[socialIndex + 1]
+                        .blockNumber;
+                }
+            }
+            holderStake.precomputedRewards +=
+                (focusedBlock.rewards *
+                    holderStake.amount *
+                    social.percentBonus) /
+                (focusedBlock.totalPonderedStake * 100);
+
+            holderStake.precomputedUntilBlock++;
+            if (gasleft() < 70000) return false;
+        }
+        return true;
+    }
+
     function canCreateNewBlock() public view returns (bool) {
         uint256 currentBlockAge = block.timestamp - currentBlockCreationTime;
         if (currentBlockAge < 1 days || currentTotalStake == 0) return false;
@@ -396,9 +507,20 @@ contract Staking is Ownable {
         currentBlockCakeRewards = 0;
     }
 
-    function unstakeAll() public pure returns (uint256) {
+    function unstakeAllUnblocked() external returns (uint256) {
         return 0;
-        // TODO;
+    }
+
+    function unstake(uint256 stakeIndex) external returns (uint256) {
+        return 0;
+    }
+
+    function withdrawAllRewardsAndDividends() external returns (uint256) {
+        return computeHolderDividendsAndRewards();
+    }
+
+    function withdrawRewardsAndDividends() external returns (uint256) {
+        return 0;
     }
 
     function swapCakeForTokens(uint256 amount) internal returns (uint256) {
