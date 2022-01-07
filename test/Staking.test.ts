@@ -366,13 +366,86 @@ describe("PEUPLE", () => {
             .computeHolderDividends();
           expect(dividends).to.equal(oneBillion);
         });
-        it("holder can withdraw dividends", async () => {
-          const dividends = await staking
-            .connect(holder_1)
-            .withdrawAllRewardsAndDividends();
-          expect(dividends).to.equal(oneBillion);
+        it("holder can withdraw dividends for stake", async () => {
+          await staking.connect(holder_1).withdrawRewardsAndDividends(0);
           const balance = await peuple.balanceOf(holder_1.address);
           expect(balance).to.equal(oneBillion);
+        });
+        it("can only withdraw dividends for stake ONCE", async () => {
+          await staking.connect(holder_1).withdrawRewardsAndDividends(0);
+          await staking.connect(holder_1).withdrawRewardsAndDividends(0);
+          const balance = await peuple.balanceOf(holder_1.address);
+          expect(balance).to.equal(oneBillion);
+        });
+        it("can withdraw all dividends", async () => {
+          await staking.connect(holder_1).withdrawAllRewardsAndDividends();
+          const balance = await peuple.balanceOf(holder_1.address);
+          expect(balance).to.equal(oneBillion);
+        });
+        it("can only withdraw all dividends ONCE", async () => {
+          await staking.connect(holder_1).withdrawAllRewardsAndDividends();
+          await staking.connect(holder_1).withdrawAllRewardsAndDividends();
+          const balance = await peuple.balanceOf(holder_1.address);
+          expect(balance).to.equal(oneBillion);
+        });
+        it("can NOT unstake", async () => {
+          await staking.connect(holder_1).unstakeAll();
+          await staking.connect(holder_1).unstake(0);
+          const balance = await peuple.balanceOf(holder_1.address);
+          expect(balance).to.equal(0);
+        });
+        describe("after more than one month", () => {
+          beforeEach(async () => {
+            await days(32);
+          });
+          it("can unstake all", async () => {
+            await staking.connect(holder_1).unstakeAll();
+            const balance = await peuple.balanceOf(holder_1.address);
+            expect(balance).to.equal(oneBillion.mul(2));
+          });
+          it("removes unstaked from staked list", async () => {
+            await staking.connect(holder_1).unstakeAll();
+            await expect(
+              staking.connect(holder_1).holderStakes(holder_1.address, 0)
+            ).to.be.rejectedWith(Error);
+          });
+          describe("after withdrawing dividends", () => {
+            beforeEach(async () => {
+              await staking.connect(holder_1).withdrawAllRewardsAndDividends();
+            });
+            it("can unstake all", async () => {
+              await staking.connect(holder_1).unstakeAll();
+              const balance = await peuple.balanceOf(holder_1.address);
+              expect(balance).to.equal(oneBillion.mul(2));
+            });
+          });
+          describe("when buy and stake one million", () => {
+            beforeEach(async () => {
+              await buyAndStake(holder_1, oneMillion);
+            });
+            it("removes only unstaked from staked list", async () => {
+              await staking.connect(holder_1).unstakeAll();
+              await expect(
+                staking.connect(holder_1).holderStakes(holder_1.address, 1)
+              ).to.be.rejectedWith(Error);
+              const stake = await staking
+                .connect(holder_1)
+                .holderStakes(holder_1.address, 0);
+              expect(stake.amount).to.equal(oneMillion);
+            });
+            it("can unstake single stake", async () => {
+              await staking.connect(holder_1).unstake(0);
+              const balance = await peuple.balanceOf(holder_1.address);
+              expect(balance).to.equal(oneBillion.mul(2));
+              await expect(
+                staking.connect(holder_1).holderStakes(holder_1.address, 1)
+              ).to.be.rejectedWith(Error);
+              const stake = await staking
+                .connect(holder_1)
+                .holderStakes(holder_1.address, 0);
+              expect(stake.amount).to.equal(oneMillion);
+            });
+          });
         });
       });
       it("redistributes all peuple rewards to holder", async () => {
