@@ -22,15 +22,15 @@ contract Staking is Ownable {
 
     uint256 public constant MAX_STAKE = (2**32 - 1) * 1 ether;
 
-    uint256 public minimumCakeForSwap = 10 ether;
-    uint256 public minimumPeupleForBlockCreation = 10e6 ether;
+    uint256 public minimumCakeForSwap = 10 ether; // TODO setter
+    uint256 public minimumPeupleForBlockCreation = 10e6 ether; // TODO setter
 
-    uint256 public currentTotalStake = 0;
-    uint256 public currentTotalPonderedStake = 0;
-    uint256 public currentTotalOwnedPeuple = 0;
+    uint256 public currentTotalStake = 0; // TODO update on unstake
+    uint256 public currentTotalPonderedStake = 0; // TODO update on unstake
+    uint256 public currentTotalOwnedPeuple = 0; // TODO update on unstake
 
-    uint256 public percentBonusForTwoMonthStaking = 50;
-    uint256 public percentBonusForThreeMonthStaking = 100;
+    uint256 public percentBonusForTwoMonthStaking = 50; // TODO setter
+    uint256 public percentBonusForThreeMonthStaking = 100; // TODO setter
 
     struct HolderStake {
         uint256 amount;
@@ -522,6 +522,7 @@ contract Staking is Ownable {
         HolderStake[] storage stakes = holderStakes[msg.sender];
         uint256 amountToWithdraw = 0;
         uint256 unstakedCount = 0;
+        uint256 unstakedTotal = 0;
         uint256[] memory unstakedIndexes = new uint256[](stakes.length);
         for (uint256 stakeIndex = 0; stakeIndex < stakes.length; stakeIndex++) {
             HolderStake storage holderStake = stakes[stakeIndex];
@@ -530,6 +531,7 @@ contract Staking is Ownable {
                 uint256 allDividendsAndRewards = computeHolderDividendsAndRewardsForStake( // TODO optimize by passing stake directly
                     stakeIndex
                 );
+                unstakedTotal += holderStake.amount;
                 amountToWithdraw +=
                     holderStake.amount +
                     allDividendsAndRewards -
@@ -543,7 +545,18 @@ contract Staking is Ownable {
             stakes[stakeIndex] = stakes[stakes.length - 1];
             stakes.pop();
         }
+        currentTotalStake -= unstakedTotal;
+        HolderSocial[] storage socials = holderSocials[msg.sender];
+        HolderSocial storage currentSocial = socials[socials.length - 1];
+        currentTotalPonderedStake -=
+            unstakedTotal +
+            (unstakedTotal * currentSocial.percentBonus) /
+            100;
+        currentTotalOwnedPeuple -= amountToWithdraw;
         IERC20(peuple).transfer(msg.sender, amountToWithdraw);
+
+        createNewBlock();
+
         return amountToWithdraw;
     }
 
@@ -557,9 +570,20 @@ contract Staking is Ownable {
             uint256 amountToWithdraw = holderStake.amount +
                 allDividendsAndRewards -
                 holderStake.withdrawn;
+            currentTotalStake -= holderStake.amount;
+            HolderSocial[] storage socials = holderSocials[msg.sender];
+            HolderSocial storage currentSocial = socials[socials.length - 1];
+            currentTotalPonderedStake -=
+                holderStake.amount +
+                (holderStake.amount * currentSocial.percentBonus) /
+                100;
+            currentTotalOwnedPeuple -= amountToWithdraw;
             stakes[stakeIndex] = stakes[stakes.length - 1];
             stakes.pop();
             IERC20(peuple).transfer(msg.sender, amountToWithdraw);
+
+            createNewBlock();
+
             return amountToWithdraw;
         } else {
             return 0;
@@ -579,6 +603,7 @@ contract Staking is Ownable {
             amountToWithdraw += allDividendsAndRewards - holderStake.withdrawn;
             holderStake.withdrawn = allDividendsAndRewards;
         }
+        currentTotalOwnedPeuple -= amountToWithdraw;
         IERC20(peuple).transfer(msg.sender, amountToWithdraw);
         return amountToWithdraw;
     }
@@ -596,6 +621,7 @@ contract Staking is Ownable {
         uint256 amountToWithdraw = allDividendsAndRewards -
             holderStake.withdrawn;
         holderStake.withdrawn = allDividendsAndRewards;
+        currentTotalOwnedPeuple -= amountToWithdraw;
         IERC20(peuple).transfer(msg.sender, amountToWithdraw);
         return amountToWithdraw;
     }

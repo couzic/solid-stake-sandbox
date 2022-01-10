@@ -394,6 +394,44 @@ describe("PEUPLE", () => {
           const balance = await peuple.balanceOf(holder_1.address);
           expect(balance).to.equal(0);
         });
+        describe("when holder has withdrawn all rewards and dividends", () => {
+          beforeEach(async () => {
+            await staking.connect(holder_1).withdrawAllRewardsAndDividends();
+          });
+          describe("for one thousand cake dividends", () => {
+            beforeEach(async () => {
+              await cake
+                .connect(cakeOwner)
+                .transfer(staking.address, oneThousand);
+              await days(2);
+              await createNewBlock();
+            });
+            it("holder can withdraw dividends for stake", async () => {
+              await staking.connect(holder_1).withdrawRewardsAndDividends(0);
+              const balance = await peuple.balanceOf(holder_1.address);
+              expect(balance).to.equal(oneBillion.mul(2));
+            });
+          });
+        });
+        describe("when holder has withdrawn rewards and dividends for first stake", () => {
+          beforeEach(async () => {
+            await staking.connect(holder_1).withdrawRewardsAndDividends(0);
+          });
+          describe("for one thousand cake dividends", () => {
+            beforeEach(async () => {
+              await cake
+                .connect(cakeOwner)
+                .transfer(staking.address, oneThousand);
+              await days(2);
+              await createNewBlock();
+            });
+            it("holder can withdraw dividends for stake", async () => {
+              await staking.connect(holder_1).withdrawRewardsAndDividends(0);
+              const balance = await peuple.balanceOf(holder_1.address);
+              expect(balance).to.equal(oneBillion.mul(2));
+            });
+          });
+        });
         describe("after more than one month", () => {
           beforeEach(async () => {
             await days(32);
@@ -402,6 +440,9 @@ describe("PEUPLE", () => {
             await staking.connect(holder_1).unstakeAll();
             const balance = await peuple.balanceOf(holder_1.address);
             expect(balance).to.equal(oneBillion.mul(2));
+            expect(await staking.currentTotalStake()).to.equal(0);
+            expect(await staking.currentTotalPonderedStake()).to.equal(0);
+            expect(await peuple.balanceOf(staking.address)).to.equal(0);
           });
           it("removes unstaked from staked list", async () => {
             await staking.connect(holder_1).unstakeAll();
@@ -564,6 +605,76 @@ describe("PEUPLE", () => {
               .setPercentBonusForThreeMonthStaking(201)
           ).to.be.rejectedWith(Error);
         });
+      });
+    });
+    it("handles staking and unstaking all, twice", async () => {
+      // ONCE
+      await buyAndStake(holder_1, oneBillion);
+      await cake.connect(cakeOwner).transfer(staking.address, oneThousand);
+      await days(2);
+      await createNewBlock();
+      await days(30);
+      await staking.connect(holder_1).unstakeAll();
+      expect(await peuple.balanceOf(holder_1.address)).to.equal(
+        oneBillion.mul(2)
+      );
+
+      // TWICE
+      await stakePeuple(holder_1, oneBillion, 1);
+      await cake.connect(cakeOwner).transfer(staking.address, oneThousand);
+      await days(2);
+      await createNewBlock();
+      await days(30);
+      await staking.connect(holder_1).unstakeAll();
+      expect(await peuple.balanceOf(holder_1.address)).to.equal(
+        oneBillion.mul(3)
+      );
+    });
+    it("handles staking and unstaking, twice", async () => {
+      // ONCE
+      await buyAndStake(holder_1, oneBillion);
+      await cake.connect(cakeOwner).transfer(staking.address, oneThousand);
+      await days(2);
+      await createNewBlock();
+      await days(30);
+      await staking.connect(holder_1).unstake(0);
+      expect(await staking.currentTotalStake()).to.equal(0);
+      expect(await peuple.balanceOf(holder_1.address)).to.equal(
+        oneBillion.mul(2)
+      );
+
+      // TWICE
+      await stakePeuple(holder_1, oneBillion, 1);
+      await cake.connect(cakeOwner).transfer(staking.address, oneThousand);
+      await days(2);
+      await createNewBlock();
+      expect(
+        await staking.connect(holder_1).computeHolderDividendsAndRewards()
+      ).to.equal(oneBillion);
+      await days(30);
+      await staking.connect(holder_1).unstake(0);
+      expect(await peuple.balanceOf(holder_1.address)).to.equal(
+        oneBillion.mul(3)
+      );
+    });
+    describe("when holder with social bonus buys and stakes for one month and for one thousand cake dividends after 30 days", () => {
+      beforeEach(async () => {
+        await buyAndStake(holder_1, oneBillion);
+        await staking
+          .connect(stakingOwner)
+          .setHolderSocialPercentBonus(holder_1.address, 100);
+        await cake.connect(cakeOwner).transfer(staking.address, oneThousand);
+        await days(2);
+        await createNewBlock();
+        await days(30);
+      });
+      it("can unstake all", async () => {
+        await staking.connect(holder_1).unstakeAll();
+        expect(await staking.currentTotalPonderedStake()).to.equal(0);
+      });
+      it("can unstake", async () => {
+        await staking.connect(holder_1).unstake(0);
+        expect(await staking.currentTotalPonderedStake()).to.equal(0);
       });
     });
     describe("when two holders buy and stake one billion peuple each", () => {
