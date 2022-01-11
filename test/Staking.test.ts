@@ -389,7 +389,6 @@ describe("PEUPLE", () => {
           expect(balance).to.equal(oneBillion);
         });
         it("can NOT unstake", async () => {
-          await staking.connect(holder_1).unstakeAll();
           await staking.connect(holder_1).unstake(0);
           const balance = await peuple.balanceOf(holder_1.address);
           expect(balance).to.equal(0);
@@ -436,8 +435,8 @@ describe("PEUPLE", () => {
           beforeEach(async () => {
             await days(32);
           });
-          it("can unstake all", async () => {
-            await staking.connect(holder_1).unstakeAll();
+          it("can unstake", async () => {
+            await staking.connect(holder_1).unstake(0);
             const balance = await peuple.balanceOf(holder_1.address);
             expect(balance).to.equal(oneBillion.mul(2));
             expect(await staking.currentTotalStake()).to.equal(0);
@@ -445,7 +444,7 @@ describe("PEUPLE", () => {
             expect(await peuple.balanceOf(staking.address)).to.equal(0);
           });
           it("removes unstaked from staked list", async () => {
-            await staking.connect(holder_1).unstakeAll();
+            await staking.connect(holder_1).unstake(0);
             await expect(
               staking.connect(holder_1).holderStakes(holder_1.address, 0)
             ).to.be.rejectedWith(Error);
@@ -454,8 +453,8 @@ describe("PEUPLE", () => {
             beforeEach(async () => {
               await staking.connect(holder_1).withdrawAllRewardsAndDividends();
             });
-            it("can unstake all", async () => {
-              await staking.connect(holder_1).unstakeAll();
+            it("can unstake", async () => {
+              await staking.connect(holder_1).unstake(0);
               const balance = await peuple.balanceOf(holder_1.address);
               expect(balance).to.equal(oneBillion.mul(2));
             });
@@ -464,17 +463,7 @@ describe("PEUPLE", () => {
             beforeEach(async () => {
               await buyAndStake(holder_1, oneMillion);
             });
-            it("removes only unstaked from staked list", async () => {
-              await staking.connect(holder_1).unstakeAll();
-              await expect(
-                staking.connect(holder_1).holderStakes(holder_1.address, 1)
-              ).to.be.rejectedWith(Error);
-              const stake = await staking
-                .connect(holder_1)
-                .holderStakes(holder_1.address, 0);
-              expect(stake.amount).to.equal(oneMillion);
-            });
-            it("can unstake single stake", async () => {
+            it("can unstake first stake", async () => {
               await staking.connect(holder_1).unstake(0);
               const balance = await peuple.balanceOf(holder_1.address);
               expect(balance).to.equal(oneBillion.mul(2));
@@ -607,29 +596,6 @@ describe("PEUPLE", () => {
         });
       });
     });
-    it("handles staking and unstaking all, twice", async () => {
-      // ONCE
-      await buyAndStake(holder_1, oneBillion);
-      await cake.connect(cakeOwner).transfer(staking.address, oneThousand);
-      await days(2);
-      await createNewBlock();
-      await days(30);
-      await staking.connect(holder_1).unstakeAll();
-      expect(await peuple.balanceOf(holder_1.address)).to.equal(
-        oneBillion.mul(2)
-      );
-
-      // TWICE
-      await stakePeuple(holder_1, oneBillion, 1);
-      await cake.connect(cakeOwner).transfer(staking.address, oneThousand);
-      await days(2);
-      await createNewBlock();
-      await days(30);
-      await staking.connect(holder_1).unstakeAll();
-      expect(await peuple.balanceOf(holder_1.address)).to.equal(
-        oneBillion.mul(3)
-      );
-    });
     it("handles staking and unstaking, twice", async () => {
       // ONCE
       await buyAndStake(holder_1, oneBillion);
@@ -667,10 +633,6 @@ describe("PEUPLE", () => {
         await days(2);
         await createNewBlock();
         await days(30);
-      });
-      it("can unstake all", async () => {
-        await staking.connect(holder_1).unstakeAll();
-        expect(await staking.currentTotalPonderedStake()).to.equal(0);
       });
       it("can unstake", async () => {
         await staking.connect(holder_1).unstake(0);

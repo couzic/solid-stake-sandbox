@@ -120,7 +120,7 @@ contract Staking is Ownable {
     }
 
     function stake(uint256 amount, uint256 months) external {
-        require(amount >= 1, "Staking: Cannot stake less than 1 token");
+        require(amount >= 1 ether, "Staking: Cannot stake less than 1 token");
         require(
             amount <= MAX_STAKE,
             "Staking: Cannot stake more than ~4B tokens"
@@ -165,6 +165,35 @@ contract Staking is Ownable {
         ensureHolderSocialsInitialized(holderSocials[msg.sender]);
 
         createNewBlock();
+    }
+
+    function unstake(uint256 stakeIndex) external returns (uint256) {
+        createNewBlock();
+
+        HolderStake[] storage stakes = holderStakes[msg.sender];
+        HolderStake storage holderStake = stakes[stakeIndex];
+        if (holderStake.blockedUntil < block.timestamp) {
+            uint256 allDividendsAndRewards = computeHolderDividendsAndRewardsForStake( // TODO optimize by passing stake directly
+                stakeIndex
+            );
+            uint256 amountToWithdraw = holderStake.amount +
+                allDividendsAndRewards -
+                holderStake.withdrawn;
+            currentTotalStake -= holderStake.amount;
+            HolderSocial[] storage socials = holderSocials[msg.sender];
+            HolderSocial storage currentSocial = socials[socials.length - 1];
+            currentTotalPonderedStake -=
+                holderStake.amount +
+                (holderStake.amount * currentSocial.percentBonus) /
+                100;
+            currentTotalOwnedPeuple -= amountToWithdraw;
+            stakes[stakeIndex] = stakes[stakes.length - 1];
+            stakes.pop();
+            IERC20(peuple).transfer(msg.sender, amountToWithdraw);
+            return amountToWithdraw;
+        } else {
+            return 0;
+        }
     }
 
     function sendCakeRewards(uint256 cakeRewards) external {
@@ -516,78 +545,6 @@ contract Staking is Ownable {
         currentBlockCreationTime = block.timestamp;
         currentBlockNumber += 1;
         currentBlockCakeRewards = 0;
-    }
-
-    function unstakeAll() external returns (uint256) {
-        HolderStake[] storage stakes = holderStakes[msg.sender];
-        uint256 amountToWithdraw = 0;
-        uint256 unstakedCount = 0;
-        uint256 unstakedTotal = 0;
-        uint256[] memory unstakedIndexes = new uint256[](stakes.length);
-        for (uint256 stakeIndex = 0; stakeIndex < stakes.length; stakeIndex++) {
-            HolderStake storage holderStake = stakes[stakeIndex];
-            if (holderStake.blockedUntil < block.timestamp) {
-                // Unblocked
-                uint256 allDividendsAndRewards = computeHolderDividendsAndRewardsForStake( // TODO optimize by passing stake directly
-                    stakeIndex
-                );
-                unstakedTotal += holderStake.amount;
-                amountToWithdraw +=
-                    holderStake.amount +
-                    allDividendsAndRewards -
-                    holderStake.withdrawn;
-                unstakedIndexes[unstakedCount] = stakeIndex;
-                unstakedCount++;
-            }
-        }
-        for (uint256 index = 0; index < unstakedCount; index++) {
-            uint256 stakeIndex = unstakedIndexes[index];
-            stakes[stakeIndex] = stakes[stakes.length - 1];
-            stakes.pop();
-        }
-        currentTotalStake -= unstakedTotal;
-        HolderSocial[] storage socials = holderSocials[msg.sender];
-        HolderSocial storage currentSocial = socials[socials.length - 1];
-        currentTotalPonderedStake -=
-            unstakedTotal +
-            (unstakedTotal * currentSocial.percentBonus) /
-            100;
-        currentTotalOwnedPeuple -= amountToWithdraw;
-        IERC20(peuple).transfer(msg.sender, amountToWithdraw);
-
-        createNewBlock();
-
-        return amountToWithdraw;
-    }
-
-    function unstake(uint256 stakeIndex) external returns (uint256) {
-        HolderStake[] storage stakes = holderStakes[msg.sender];
-        HolderStake storage holderStake = stakes[stakeIndex];
-        if (holderStake.blockedUntil < block.timestamp) {
-            uint256 allDividendsAndRewards = computeHolderDividendsAndRewardsForStake( // TODO optimize by passing stake directly
-                stakeIndex
-            );
-            uint256 amountToWithdraw = holderStake.amount +
-                allDividendsAndRewards -
-                holderStake.withdrawn;
-            currentTotalStake -= holderStake.amount;
-            HolderSocial[] storage socials = holderSocials[msg.sender];
-            HolderSocial storage currentSocial = socials[socials.length - 1];
-            currentTotalPonderedStake -=
-                holderStake.amount +
-                (holderStake.amount * currentSocial.percentBonus) /
-                100;
-            currentTotalOwnedPeuple -= amountToWithdraw;
-            stakes[stakeIndex] = stakes[stakes.length - 1];
-            stakes.pop();
-            IERC20(peuple).transfer(msg.sender, amountToWithdraw);
-
-            createNewBlock();
-
-            return amountToWithdraw;
-        } else {
-            return 0;
-        }
     }
 
     function withdrawAllRewardsAndDividends() external returns (uint256) {
