@@ -247,7 +247,7 @@ describe("PEUPLE", () => {
           });
           it("stores dividends for first holder", async () => {
             expect(
-              await staking.connect(holder_1).computeHolderDividends()
+              await staking.connect(holder_1).computeDividends(0)
             ).to.be.gt(ether(1));
           });
         });
@@ -277,10 +277,10 @@ describe("PEUPLE", () => {
         it("distributes dividends to all three holders", async () => {
           const dividends_1 = await staking
             .connect(holder_1)
-            .computeHolderDividends();
+            .computeDividends(0);
           const dividends_2 = await staking
             .connect(holder_2)
-            .computeHolderDividends();
+            .computeDividends(0);
           const dividends_3 = await cake.balanceOf(holder_3.address);
           expect(dividends_1).to.equal(dividends_2);
           expect(dividends_2.gt(dividends_3.mul(1_000_000))).to.be.true;
@@ -300,10 +300,10 @@ describe("PEUPLE", () => {
             it("distributes dividends to all three holders", async () => {
               const dividends_1 = await staking
                 .connect(holder_1)
-                .computeHolderDividends();
+                .computeDividends(0);
               const dividends_2 = await staking
                 .connect(holder_2)
-                .computeHolderDividends();
+                .computeDividends(0);
               const dividends_3 = await cake.balanceOf(holder_3.address);
               expect(dividends_1).to.be.gt(0);
               expect(dividends_1).to.equal(dividends_2);
@@ -336,7 +336,7 @@ describe("PEUPLE", () => {
         it("does not give any dividends to second holder yet", async () => {
           const dividends_2 = await staking
             .connect(holder_2)
-            .computeHolderDividends();
+            .computeDividends(0);
           expect(dividends_2).to.equal(0);
         });
       });
@@ -350,9 +350,76 @@ describe("PEUPLE", () => {
       await p.setLiquidityFee(0);
       await p.setMarketingFee(0);
     });
+    it("stakes one peuple", async () => {
+      await buyAndStake(holder_1, ether(1));
+    });
+    it("rejects too small amount", async () => {
+      await expect(stakePeuple(holder_1, ether(1).sub(1))).to.be.rejectedWith(
+        Error
+      );
+    });
     describe("when first holder buys and stakes one billion peuple for one month", () => {
       beforeEach(async () => {
         await buyAndStake(holder_1, oneBillion);
+      });
+      describe("when a thousand cake rewards distributed after 31 days", () => {
+        beforeEach(async () => {
+          await days(31);
+          await sendCakeRewards(oneThousand);
+        });
+        it("receives rewards", async () => {
+          const rewards = await staking.connect(holder_1).computeRewards(0);
+          await staking.connect(holder_1).withdrawRewardsAndDividends(0);
+          const withdrawn = await peuple.balanceOf(holder_1.address);
+          expect(rewards).to.equal(withdrawn).to.equal(oneBillion);
+        });
+        describe("two days later, when a hundred cake rewards is distributed", () => {
+          beforeEach(async () => {
+            await days(2);
+            await sendCakeRewards(ether(100));
+          });
+          it("does NOT receives rewards", async () => {
+            const rewards = await staking
+              .connect(holder_1)
+              .computeWithdrawableDividendsAndRewards(0);
+            expect(rewards).to.equal(oneBillion);
+          });
+          it("releases unclaimable rewards when unstaking", async () => {
+            await buyAndStake(holder_2, oneBillion);
+            await staking.connect(holder_1).unstake(0);
+            await days(2);
+            await staking.createNewBlock();
+            const rewards = await staking.connect(holder_2).computeRewards(0);
+            expect(rewards).to.equal(oneMillion.mul(100));
+          });
+          describe("when first holder withdraws", () => {
+            beforeEach(async () => {
+              await staking.connect(holder_1).withdrawRewardsAndDividends(0);
+            });
+            describe("two days later, when a hundred cake rewards is distributed", () => {
+              beforeEach(async () => {
+                await days(2);
+                await sendCakeRewards(ether(100));
+              });
+              it("does NOT receives rewards", async () => {
+                const rewards = await staking
+                  .connect(holder_1)
+                  .computeDividendsAndRewards(0);
+                expect(rewards).to.equal(oneBillion);
+              });
+              it("releases unclaimable rewards when unstaking", async () => {
+                await buyAndStake(holder_2, oneBillion);
+                await staking.connect(holder_1).unstake(0);
+                await days(2);
+                await staking.createNewBlock();
+                const rewards = await staking
+                  .connect(holder_2)
+                  .computeRewards(0);
+                expect(rewards).to.equal(oneMillion.mul(200));
+              });
+            });
+          });
+        });
       });
       describe("for one thousand cake dividends", () => {
         beforeEach(async () => {
@@ -360,31 +427,23 @@ describe("PEUPLE", () => {
           await days(2);
           await createNewBlock();
         });
-        it("redistributes all dividends to holder", async () => {
-          const dividends = await staking
-            .connect(holder_1)
-            .computeHolderDividends();
-          expect(dividends).to.equal(oneBillion);
+        it("redistributes dividends to holder", async () => {
+          const s = staking.connect(holder_1);
+          const dividends = await s.computeDividends(0);
+          const withdrawable = await s.computeWithdrawableDividendsAndRewards(
+            0
+          );
+          await s.withdrawRewardsAndDividends(0);
+          const withdrawn = await peuple.balanceOf(holder_1.address);
+          expect(dividends)
+            .to.equal(withdrawable)
+            .to.equal(withdrawn)
+            .to.equal(oneBillion);
+          expect(await s.computeWithdrawableDividendsAndRewards(0)).to.equal(0);
         });
-        it("holder can withdraw dividends for stake", async () => {
+        it("can only withdraw dividends ONCE", async () => {
           await staking.connect(holder_1).withdrawRewardsAndDividends(0);
-          const balance = await peuple.balanceOf(holder_1.address);
-          expect(balance).to.equal(oneBillion);
-        });
-        it("can only withdraw dividends for stake ONCE", async () => {
           await staking.connect(holder_1).withdrawRewardsAndDividends(0);
-          await staking.connect(holder_1).withdrawRewardsAndDividends(0);
-          const balance = await peuple.balanceOf(holder_1.address);
-          expect(balance).to.equal(oneBillion);
-        });
-        it("can withdraw all dividends", async () => {
-          await staking.connect(holder_1).withdrawAllRewardsAndDividends();
-          const balance = await peuple.balanceOf(holder_1.address);
-          expect(balance).to.equal(oneBillion);
-        });
-        it("can only withdraw all dividends ONCE", async () => {
-          await staking.connect(holder_1).withdrawAllRewardsAndDividends();
-          await staking.connect(holder_1).withdrawAllRewardsAndDividends();
           const balance = await peuple.balanceOf(holder_1.address);
           expect(balance).to.equal(oneBillion);
         });
@@ -393,26 +452,7 @@ describe("PEUPLE", () => {
           const balance = await peuple.balanceOf(holder_1.address);
           expect(balance).to.equal(0);
         });
-        describe("when holder has withdrawn all rewards and dividends", () => {
-          beforeEach(async () => {
-            await staking.connect(holder_1).withdrawAllRewardsAndDividends();
-          });
-          describe("for one thousand cake dividends", () => {
-            beforeEach(async () => {
-              await cake
-                .connect(cakeOwner)
-                .transfer(staking.address, oneThousand);
-              await days(2);
-              await createNewBlock();
-            });
-            it("holder can withdraw dividends for stake", async () => {
-              await staking.connect(holder_1).withdrawRewardsAndDividends(0);
-              const balance = await peuple.balanceOf(holder_1.address);
-              expect(balance).to.equal(oneBillion.mul(2));
-            });
-          });
-        });
-        describe("when holder has withdrawn rewards and dividends for first stake", () => {
+        describe("when holder has withdrawn rewards and dividends", () => {
           beforeEach(async () => {
             await staking.connect(holder_1).withdrawRewardsAndDividends(0);
           });
@@ -424,7 +464,7 @@ describe("PEUPLE", () => {
               await days(2);
               await createNewBlock();
             });
-            it("holder can withdraw dividends for stake", async () => {
+            it("holder can withdraw dividends", async () => {
               await staking.connect(holder_1).withdrawRewardsAndDividends(0);
               const balance = await peuple.balanceOf(holder_1.address);
               expect(balance).to.equal(oneBillion.mul(2));
@@ -433,7 +473,7 @@ describe("PEUPLE", () => {
         });
         describe("after more than one month", () => {
           beforeEach(async () => {
-            await days(32);
+            await days(31);
           });
           it("can unstake", async () => {
             await staking.connect(holder_1).unstake(0);
@@ -451,7 +491,7 @@ describe("PEUPLE", () => {
           });
           describe("after withdrawing dividends", () => {
             beforeEach(async () => {
-              await staking.connect(holder_1).withdrawAllRewardsAndDividends();
+              await staking.connect(holder_1).withdrawRewardsAndDividends(0);
             });
             it("can unstake", async () => {
               await staking.connect(holder_1).unstake(0);
@@ -483,7 +523,7 @@ describe("PEUPLE", () => {
         await peuple.connect(peupleOwner).transfer(staking.address, oneBillion);
         await days(2);
         await createNewBlock();
-        const rewards = await staking.connect(holder_1).computeHolderRewards();
+        const rewards = await staking.connect(holder_1).computeRewards(0);
         expect(rewards).to.equal(oneBillion);
       });
       describe("when 1 thousand cake reward is sent two days later", () => {
@@ -492,9 +532,9 @@ describe("PEUPLE", () => {
           await sendCakeRewards(oneThousand);
         });
         it("redistributes all cake rewards to holder", async () => {
-          expect(
-            await staking.connect(holder_1).computeHolderRewards()
-          ).to.equal(oneBillion);
+          expect(await staking.connect(holder_1).computeRewards(0)).to.equal(
+            oneBillion
+          );
         });
         describe("when 1 thousand cake reward is sent two days later AGAIN", () => {
           beforeEach(async () => {
@@ -502,9 +542,9 @@ describe("PEUPLE", () => {
             await sendCakeRewards(oneThousand);
           });
           it("redistributes all cake rewards to holder", async () => {
-            expect(
-              await staking.connect(holder_1).computeHolderRewards()
-            ).to.equal(oneBillion.mul(2));
+            expect(await staking.connect(holder_1).computeRewards(0)).to.equal(
+              oneBillion.mul(2)
+            );
           });
         });
       });
@@ -518,10 +558,10 @@ describe("PEUPLE", () => {
           await createNewBlock();
           const dividends_1 = await staking
             .connect(holder_1)
-            .computeHolderDividends();
+            .computeDividends(0);
           const dividends_2 = await staking
             .connect(holder_2)
-            .computeHolderDividends();
+            .computeDividends(0);
           expect(dividends_1).to.equal(dividends_2);
         });
       });
@@ -533,12 +573,8 @@ describe("PEUPLE", () => {
           await days(2);
           await sendCakeRewards(oneThousand);
 
-          const rewards_1 = await staking
-            .connect(holder_1)
-            .computeHolderRewards();
-          const rewards_2 = await staking
-            .connect(holder_2)
-            .computeHolderRewards();
+          const rewards_1 = await staking.connect(holder_1).computeRewards(0);
+          const rewards_2 = await staking.connect(holder_2).computeRewards(0);
           expect(rewards_2.gt(rewards_1)).to.be.true;
           const bonus = await staking.percentBonusForTwoMonthStaking();
           expect(rewards_2).to.equal(
@@ -565,12 +601,8 @@ describe("PEUPLE", () => {
           await days(2);
           await sendCakeRewards(oneThousand);
 
-          const rewards_1 = await staking
-            .connect(holder_1)
-            .computeHolderRewards();
-          const rewards_2 = await staking
-            .connect(holder_2)
-            .computeHolderRewards();
+          const rewards_1 = await staking.connect(holder_1).computeRewards(0);
+          const rewards_2 = await staking.connect(holder_2).computeRewards(0);
           expect(rewards_2.gt(rewards_1)).to.be.true;
           const bonus = await staking.percentBonusForThreeMonthStaking();
           expect(rewards_2).to.equal(
@@ -615,7 +647,7 @@ describe("PEUPLE", () => {
       await days(2);
       await createNewBlock();
       expect(
-        await staking.connect(holder_1).computeHolderDividendsAndRewards()
+        await staking.connect(holder_1).computeDividendsAndRewards(0)
       ).to.equal(oneBillion);
       await days(30);
       await staking.connect(holder_1).unstake(0);
@@ -648,23 +680,15 @@ describe("PEUPLE", () => {
         await cake.connect(cakeOwner).transfer(staking.address, oneThousand);
         await days(2);
         await createNewBlock();
-        const dividends_1 = await staking
-          .connect(holder_1)
-          .computeHolderDividends();
-        const dividends_2 = await staking
-          .connect(holder_1)
-          .computeHolderDividends();
+        const dividends_1 = await staking.connect(holder_1).computeDividends(0);
+        const dividends_2 = await staking.connect(holder_1).computeDividends(0);
         expect(dividends_1).to.equal(dividends_2).to.equal(oneBillion.div(2));
       });
       it("redistributes cake rewards evenly", async () => {
         await days(2);
         await sendCakeRewards(oneThousand);
-        const rewards_1 = await staking
-          .connect(holder_1)
-          .computeHolderRewards();
-        const rewards_2 = await staking
-          .connect(holder_1)
-          .computeHolderRewards();
+        const rewards_1 = await staking.connect(holder_1).computeRewards(0);
+        const rewards_2 = await staking.connect(holder_1).computeRewards(0);
         expect(rewards_1).to.equal(rewards_2).to.equal(oneBillion.div(2));
       });
       describe("when first holder has higher social bonus", () => {
@@ -676,12 +700,8 @@ describe("PEUPLE", () => {
         it("redistributes more rewards to first holder", async () => {
           await days(2);
           await sendCakeRewards(oneThousand);
-          const rewards_1 = await staking
-            .connect(holder_1)
-            .computeHolderRewards();
-          const rewards_2 = await staking
-            .connect(holder_2)
-            .computeHolderRewards();
+          const rewards_1 = await staking.connect(holder_1).computeRewards(0);
+          const rewards_2 = await staking.connect(holder_2).computeRewards(0);
           expect(rewards_1).to.equal(rewards_2.mul(2));
           expect(rewards_1).to.equal(oneThousand.mul(1_000_000).mul(2).div(3));
           expect(rewards_2).to.equal(oneThousand.mul(1_000_000).mul(1).div(3));
@@ -695,12 +715,8 @@ describe("PEUPLE", () => {
               .setHolderSocialPercentBonus(holder_1.address, 0);
           });
           it("still redistributes more rewards to first holder", async () => {
-            const rewards_1 = await staking
-              .connect(holder_1)
-              .computeHolderRewards();
-            const rewards_2 = await staking
-              .connect(holder_2)
-              .computeHolderRewards();
+            const rewards_1 = await staking.connect(holder_1).computeRewards(0);
+            const rewards_2 = await staking.connect(holder_2).computeRewards(0);
             expect(rewards_1).to.equal(rewards_2.mul(2));
             expect(rewards_1).to.equal(
               oneThousand.mul(1_000_000).mul(2).div(3)
@@ -713,60 +729,44 @@ describe("PEUPLE", () => {
       });
     });
 
-    describe("when single holder buys one billion and stakes it in 20 parts", () => {
+    describe("when single holder buys and stakes one billion", () => {
       beforeEach(async () => {
-        await buyPeuple(holder_1, oneBillion);
-        for await (let i of range(0, 20)) {
-          await stakePeuple(holder_1, oneBillion.div(20));
-        }
+        await buyAndStake(holder_1, oneBillion);
       });
-      describe("when 20 blocks with dividends are created", () => {
+      const blocks = 200;
+      describe(`when ${blocks} blocks with dividends are created`, () => {
         beforeEach(async () => {
-          for await (let i of range(0, 20)) {
+          for await (let i of range(0, blocks)) {
             await cake.connect(cakeOwner).transfer(staking.address, ether(10));
             await days(2);
             await createNewBlock();
           }
         });
         it("runs out of gas when computing dividends", async () => {
-          expect(
-            staking.connect(holder_1).computeHolderDividends()
+          await expect(
+            staking.connect(holder_1).computeDividends(0)
           ).to.be.rejectedWith(Error);
         });
-        describe("when dividends are precomputed once", () => {
+        describe("when tried to withdraw once", () => {
           beforeEach(async () => {
-            await staking.connect(holder_1).precomputeAllRewardsAndDividends();
+            await staking.connect(holder_1).withdrawRewardsAndDividends(0);
           });
           it("computes dividends", async () => {
             const dividends = await staking
               .connect(holder_1)
-              .computeHolderDividends();
-            expect(dividends).to.equal(
-              BigNumber.from("200000000000000000000000000")
-            );
-          });
-        });
-        describe("when dividends are precomputed for first ten selected stakes", () => {
-          beforeEach(async () => {
-            for await (let i of range(0, 10)) {
-              await staking
-                .connect(holder_1)
-                .precomputeRewardsAndDividendsForStake(i);
-            }
-          });
-          it("computes dividends", async () => {
-            const dividends = await staking
-              .connect(holder_1)
-              .computeHolderDividends();
-            expect(dividends).to.equal(
-              BigNumber.from("200000000000000000000000000")
-            );
+              .computeDividends(0);
+            expect(dividends).to.equal(oneMillion.mul(blocks).mul(10));
           });
         });
       });
-      describe("when 20 blocks with rewards are created", () => {
+      describe("when 150 blocks with rewards are created", () => {
         beforeEach(async () => {
-          for await (let i of range(0, 20)) {
+          await days(31);
+          await peuple
+            .connect(peupleOwner)
+            .transfer(staking.address, oneBillion);
+          await createNewBlock();
+          for await (let i of range(0, 150)) {
             await peuple
               .connect(peupleOwner)
               .transfer(staking.address, oneMillion.mul(10));
@@ -774,40 +774,18 @@ describe("PEUPLE", () => {
             await createNewBlock();
           }
         });
-        it("runs out of gas when computing dividends", async () => {
-          expect(
-            staking.connect(holder_1).computeHolderRewards()
+        it("runs out of gas when computing rewards", async () => {
+          await expect(
+            staking.connect(holder_1).computeRewards(0)
           ).to.be.rejectedWith(Error);
         });
-        describe("when rewards are precomputed thrice", () => {
+        describe("when tried to withdraw once", () => {
           beforeEach(async () => {
-            await staking.connect(holder_1).precomputeAllRewardsAndDividends();
-            await staking.connect(holder_1).precomputeAllRewardsAndDividends();
-            await staking.connect(holder_1).precomputeAllRewardsAndDividends();
+            await staking.connect(holder_1).withdrawRewardsAndDividends(0);
           });
           it("computes rewards", async () => {
-            const rewards = await staking
-              .connect(holder_1)
-              .computeHolderRewards();
-            expect(rewards).to.equal(oneMillion.mul(10).mul(20));
-          });
-          describe("when another block is created", () => {
-            beforeEach(async () => {
-              await peuple
-                .connect(peupleOwner)
-                .transfer(staking.address, oneMillion.mul(10));
-              await days(2);
-              await createNewBlock();
-            });
-            it("computes rewards after single precomputation", async () => {
-              await staking
-                .connect(holder_1)
-                .precomputeAllRewardsAndDividends();
-              const rewards = await staking
-                .connect(holder_1)
-                .computeHolderRewards();
-              expect(rewards).to.equal(oneMillion.mul(10).mul(21));
-            });
+            const rewards = await staking.connect(holder_1).computeRewards(0);
+            expect(rewards).to.equal(oneBillion);
           });
         });
       });
@@ -818,109 +796,132 @@ describe("PEUPLE", () => {
             .connect(stakingOwner)
             .setHolderSocialPercentBonus(holder_1.address, 100);
         });
-        describe("when 10 blocks with rewards are created", () => {
+        describe("when one billion peuple reward received", () => {
           beforeEach(async () => {
-            for await (let i of range(0, 10)) {
-              await peuple
-                .connect(peupleOwner)
-                .transfer(staking.address, oneMillion.mul(10));
-              await days(2);
-              await createNewBlock();
-            }
+            await peuple
+              .connect(peupleOwner)
+              .transfer(staking.address, oneBillion);
+            await days(2);
+            await createNewBlock();
           });
-          it("precomputes rewards with social bonus", async () => {
-            await staking.connect(holder_1).precomputeAllRewardsAndDividends();
-            await staking.connect(holder_1).precomputeAllRewardsAndDividends();
-            const rewards_1 = await staking
-              .connect(holder_1)
-              .computeHolderRewards();
-            const rewards_2 = await staking
-              .connect(holder_2)
-              .computeHolderRewards();
-            expect(rewards_1).to.equal(
-              BigNumber.from("66666666666666666666666400")
-            );
-            expect(rewards_2).to.equal(
-              BigNumber.from("33333333333333333333333330")
-            );
+          describe("when first holder withdraws", () => {
+            beforeEach(async () => {
+              await staking.connect(holder_1).withdrawRewardsAndDividends(0);
+            });
+            describe("when another billion peuple reward received", () => {
+              beforeEach(async () => {
+                await peuple
+                  .connect(peupleOwner)
+                  .transfer(staking.address, oneBillion);
+                await days(2);
+                await createNewBlock();
+              });
+              it("precomputes rewards with social bonus", async () => {
+                const rewards_1 = await staking
+                  .connect(holder_1)
+                  .computeRewards(0);
+                expect(rewards_1).to.equal(
+                  BigNumber.from("1333333333333333333333333332") //  oneBillion.mul(2).mul(2).div(3)
+                );
+                const rewards_2 = await staking
+                  .connect(holder_2)
+                  .computeRewards(0);
+                expect(rewards_2).to.equal(oneBillion.mul(2).div(3));
+              });
+            });
           });
-          describe("when first holder gets his social score back to zero before another 10 blocks are created", () => {
+          it("withdraws rewards with social bonus", async () => {
+            const rewards_1 = await staking.connect(holder_1).computeRewards(0);
+            await staking.connect(holder_1).withdrawRewardsAndDividends(0);
+            const withdrawn_1 = await peuple.balanceOf(holder_1.address);
+            const rewards_2 = await staking.connect(holder_2).computeRewards(0);
+            await staking.connect(holder_2).withdrawRewardsAndDividends(0);
+            const withdrawn_2 = await peuple.balanceOf(holder_2.address);
+            expect(rewards_1)
+              .to.equal(withdrawn_1)
+              .to.equal(oneBillion.mul(2).div(3));
+            expect(rewards_2).to.equal(withdrawn_2).to.equal(oneBillion.div(3));
+          });
+          describe("when first holder gets his social score back to zero before another block is created", () => {
             beforeEach(async () => {
               await staking
                 .connect(stakingOwner)
                 .setHolderSocialPercentBonus(holder_1.address, 0);
-              for await (let i of range(0, 10)) {
-                await peuple
-                  .connect(peupleOwner)
-                  .transfer(staking.address, oneMillion.mul(10));
-                await days(2);
-                await createNewBlock();
-              }
+              await peuple
+                .connect(peupleOwner)
+                .transfer(staking.address, oneBillion);
+              await days(2);
+              await createNewBlock();
             });
-            it("precomputes rewards with social bonus", async () => {
-              for await (let i of range(0, 3)) {
-                await staking
-                  .connect(holder_1)
-                  .precomputeAllRewardsAndDividends();
-              }
+            it("withdraws rewards with social bonus", async () => {
               const rewards_1 = await staking
                 .connect(holder_1)
-                .computeHolderRewards();
+                .computeRewards(0);
+              await staking.connect(holder_1).withdrawRewardsAndDividends(0);
+              const withdrawn_1 = await peuple.balanceOf(holder_1.address);
               const rewards_2 = await staking
                 .connect(holder_2)
-                .computeHolderRewards();
-              expect(rewards_1).to.equal(
-                BigNumber.from("66666666666666666666666400").add(
-                  oneMillion.mul(50)
-                )
-              );
-              expect(rewards_2).to.equal(
-                BigNumber.from("33333333333333333333333330").add(
-                  oneMillion.mul(50)
-                )
-              );
+                .computeRewards(0);
+              await staking.connect(holder_2).withdrawRewardsAndDividends(0);
+              const withdrawn_2 = await peuple.balanceOf(holder_2.address);
+              expect(rewards_1)
+                .to.equal(withdrawn_1)
+                .to.equal(oneBillion.mul(2).div(3).add(oneBillion.div(2)));
+              expect(rewards_2)
+                .to.equal(withdrawn_2)
+                .to.equal(oneBillion.div(3).add(oneBillion.div(2)));
             });
           });
         });
       });
     });
-    describe("when single holder buys one billion and stakes it for 3 months in 20 parts", () => {
+    describe("when single holder buys one billion and stakes it for 3 months", () => {
       beforeEach(async () => {
-        await buyPeuple(holder_1, oneBillion);
-        for await (let i of range(0, 20)) {
-          await stakePeuple(holder_1, oneBillion.div(20), 3);
-        }
+        await buyAndStake(holder_1, oneBillion, 3);
       });
       describe("when second holder buys and stakes one billion for one month only", () => {
         beforeEach(async () => {
           await buyAndStake(holder_2, oneBillion);
         });
-        describe("when 20 blocks with rewards are created", () => {
+        describe("when one billion peuple reward received", () => {
           beforeEach(async () => {
-            for await (let i of range(0, 20)) {
-              await peuple
-                .connect(peupleOwner)
-                .transfer(staking.address, oneMillion.mul(10));
-              await days(2);
-              await createNewBlock();
-            }
+            await peuple
+              .connect(peupleOwner)
+              .transfer(staking.address, oneBillion);
+            await days(2);
+            await createNewBlock();
           });
-          it("precomputes rewards with time bonus", async () => {
-            await staking.connect(holder_1).precomputeAllRewardsAndDividends();
-            await staking.connect(holder_1).precomputeAllRewardsAndDividends();
-            await staking.connect(holder_1).precomputeAllRewardsAndDividends();
-            const rewards = await staking
-              .connect(holder_1)
-              .computeHolderRewards();
-            expect(rewards).to.equal(
-              BigNumber.from("133333333333333333333333200")
-            );
-            const rewards_2 = await staking
-              .connect(holder_2)
-              .computeHolderRewards();
-            expect(rewards_2).to.equal(
-              BigNumber.from("66666666666666666666666660")
-            );
+          describe("when first holder withdraws", () => {
+            beforeEach(async () => {
+              await staking.connect(holder_1).withdrawRewardsAndDividends(0);
+            });
+            describe("when another billion peuple reward received", () => {
+              beforeEach(async () => {
+                await peuple
+                  .connect(peupleOwner)
+                  .transfer(staking.address, oneBillion);
+                await days(2);
+                await createNewBlock();
+              });
+              it("withdraws rewards with time bonus", async () => {
+                const rewards_1 = await staking
+                  .connect(holder_1)
+                  .computeRewards(0);
+                await staking.connect(holder_1).withdrawRewardsAndDividends(0);
+                const withdrawn_1 = await peuple.balanceOf(holder_1.address);
+                const rewards_2 = await staking
+                  .connect(holder_2)
+                  .computeRewards(0);
+                await staking.connect(holder_2).withdrawRewardsAndDividends(0);
+                const withdrawn_2 = await peuple.balanceOf(holder_2.address);
+                expect(rewards_1)
+                  .to.equal(withdrawn_1)
+                  .to.equal(BigNumber.from("1333333333333333333333333332")); // oneBillion.mul(2).mul(2).div(3)
+                expect(rewards_2)
+                  .to.equal(withdrawn_2)
+                  .to.equal(oneBillion.mul(2).div(3));
+              });
+            });
           });
         });
       });
