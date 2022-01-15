@@ -177,10 +177,11 @@ contract Staking is Ownable {
         HolderStake[] storage stakes = holderStakes[msg.sender];
         HolderStake storage holderStake = stakes[stakeIndex];
         if (holderStake.blockedUntil < block.timestamp) {
-            DividendsAndRewards memory dividendsAndRewards = computeDividendsOrRewardsOrBoth( // TODO optimize by passing stake directly
-                DividendsOrRewardsOrBoth.Both,
-                stakeIndex
-            );
+            DividendsAndRewards
+                memory dividendsAndRewards = computeDividendsOrRewardsOrBoth(
+                    DividendsOrRewardsOrBoth.Both,
+                    holderStake
+                );
             uint256 amountToWithdraw = holderStake.amount +
                 dividendsAndRewards.claimable -
                 holderStake.withdrawn;
@@ -267,7 +268,7 @@ contract Staking is Ownable {
     }
 
     function computeDividendsAndRewards(uint256 stakeIndex)
-        public
+        external
         view
         returns (uint256)
     {
@@ -278,14 +279,29 @@ contract Staking is Ownable {
             );
     }
 
+    function computeClaimableDividendsOrRewardsOrBoth(
+        DividendsOrRewardsOrBoth filter,
+        uint256 stakeIndex
+    ) internal view returns (uint256) {
+        DividendsAndRewards memory result = computeDividendsOrRewardsOrBoth(
+            filter,
+            holderStakes[msg.sender][stakeIndex]
+        );
+        return result.claimable;
+    }
+
     function computeWithdrawableDividendsAndRewards(uint256 stakeIndex)
         external
         view
         returns (uint256)
     {
-        uint256 claimable = computeDividendsAndRewards(stakeIndex);
-        // TODO use directly storage stake
-        return claimable - holderStakes[msg.sender][stakeIndex].withdrawn;
+        HolderStake storage holderStake = holderStakes[msg.sender][stakeIndex];
+        DividendsAndRewards
+            memory dividendsAndRewards = computeDividendsOrRewardsOrBoth(
+                DividendsOrRewardsOrBoth.Both,
+                holderStake
+            );
+        return dividendsAndRewards.claimable - holderStake.withdrawn;
     }
 
     struct DividendsAndRewards {
@@ -293,23 +309,11 @@ contract Staking is Ownable {
         uint256 unclaimable;
     }
 
-    function computeClaimableDividendsOrRewardsOrBoth(
-        DividendsOrRewardsOrBoth filter,
-        uint256 stakeIndex
-    ) internal view returns (uint256) {
-        DividendsAndRewards memory result = computeDividendsOrRewardsOrBoth(
-            filter,
-            stakeIndex
-        );
-        return result.claimable;
-    }
-
     function computeDividendsOrRewardsOrBoth(
         DividendsOrRewardsOrBoth filter,
-        uint256 stakeIndex
+        HolderStake storage holderStake
     ) internal view returns (DividendsAndRewards memory) {
         // TODO test when not a staker
-        HolderStake storage holderStake = holderStakes[msg.sender][stakeIndex];
         uint256 claimable = holderStake.precomputedDividends +
             holderStake.precomputedClaimableRewards;
         uint256 unclaimable = holderStake.precomputedUnclaimableRewards;
@@ -415,7 +419,7 @@ contract Staking is Ownable {
         return gasleft() > 400000; // enough gas for transfer
     }
 
-    function canCreateNewBlock() public view returns (bool) {
+    function canCreateNewBlock() external view returns (bool) {
         uint256 currentBlockAge = block.timestamp - currentBlockCreationTime;
         if (currentBlockAge < 1 days || currentTotalStake == 0) return false;
         uint256 cakeBalance = IERC20(cake).balanceOf(address(this));
@@ -469,10 +473,11 @@ contract Staking is Ownable {
         HolderStake storage holderStake = holderStakes[msg.sender][stakeIndex];
         bool precomputed = precomputeRewardsAndDividends(holderStake);
         if (!precomputed) return 0;
-        DividendsAndRewards memory dividendsAndRewards = computeDividendsOrRewardsOrBoth(
-            DividendsOrRewardsOrBoth.Both,
-            stakeIndex // TODO optimize by passing stake directly
-        );
+        DividendsAndRewards
+            memory dividendsAndRewards = computeDividendsOrRewardsOrBoth(
+                DividendsOrRewardsOrBoth.Both,
+                holderStake
+            );
         uint256 amountToWithdraw = dividendsAndRewards.claimable -
             holderStake.withdrawn;
         holderStake.withdrawn = dividendsAndRewards.claimable;
