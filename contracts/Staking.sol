@@ -329,7 +329,7 @@ contract Staking is Ownable {
         ) {
             uint256 focusedBlockNumber = previousBlockNumber - 1;
             DayBlock storage focusedBlock = dayBlocks[focusedBlockNumber]; // memory ??
-            // find relevant social bonus block
+            // Find relevant social bonus
             while (social.blockNumber > focusedBlockNumber) {
                 socialIndex--;
                 social = socials[socialIndex];
@@ -345,7 +345,7 @@ contract Staking is Ownable {
                 uint256 rewards = (focusedBlock.rewards *
                     holderStake.timeBonusPonderedAmount) /
                     focusedBlock.totalPonderedStake;
-                // Social bonus
+                // Social bonus rewards
                 rewards +=
                     (focusedBlock.rewards *
                         holderStake.amount *
@@ -370,7 +370,7 @@ contract Staking is Ownable {
         uint256 socialIndex = 0;
         HolderSocial storage social = socials[socialIndex];
         uint256 blockWithNextSocialIndex = currentBlockNumber;
-        if (socialIndex + 1 < socials.length) {
+        if (socials.length > 1) {
             blockWithNextSocialIndex = socials[socialIndex + 1].blockNumber;
         }
         while (holderStake.precomputedUntilBlock < currentBlockNumber) {
@@ -383,7 +383,7 @@ contract Staking is Ownable {
                 (focusedBlock.dividends * holderStake.amount) /
                 focusedBlock.totalStake;
 
-            // Social bonus
+            // Find relevant social bonus
             while (
                 holderStake.precomputedUntilBlock == blockWithNextSocialIndex
             ) {
