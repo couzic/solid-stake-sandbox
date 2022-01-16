@@ -63,6 +63,17 @@ contract Staking is Ownable {
 
     mapping(address => HolderSocial[]) public holderSocials;
 
+    enum DividendsOrRewards {
+        Dividends,
+        Rewards,
+        Both
+    }
+
+    struct DividendsAndRewards {
+        uint256 claimable;
+        uint256 unclaimable;
+    }
+
     constructor(
         address _peuple,
         address _cake,
@@ -178,8 +189,8 @@ contract Staking is Ownable {
         HolderStake storage holderStake = stakes[stakeIndex];
         if (holderStake.blockedUntil < block.timestamp) {
             DividendsAndRewards
-                memory dividendsAndRewards = computeDividendsOrRewardsOrBoth(
-                    DividendsOrRewardsOrBoth.Both,
+                memory dividendsAndRewards = computeDividendsOrRewards(
+                    DividendsOrRewards.Both,
                     holderStake
                 );
             uint256 amountToWithdraw = holderStake.amount +
@@ -237,20 +248,14 @@ contract Staking is Ownable {
         return total;
     }
 
-    enum DividendsOrRewardsOrBoth {
-        Dividends,
-        Rewards,
-        Both
-    }
-
     function computeDividends(uint256 stakeIndex)
         external
         view
         returns (uint256)
     {
         return
-            computeClaimableDividendsOrRewardsOrBoth(
-                DividendsOrRewardsOrBoth.Dividends,
+            computeClaimableDividendsOrRewards(
+                DividendsOrRewards.Dividends,
                 stakeIndex
             );
     }
@@ -261,8 +266,8 @@ contract Staking is Ownable {
         returns (uint256)
     {
         return
-            computeClaimableDividendsOrRewardsOrBoth(
-                DividendsOrRewardsOrBoth.Rewards,
+            computeClaimableDividendsOrRewards(
+                DividendsOrRewards.Rewards,
                 stakeIndex
             );
     }
@@ -273,17 +278,17 @@ contract Staking is Ownable {
         returns (uint256)
     {
         return
-            computeClaimableDividendsOrRewardsOrBoth(
-                DividendsOrRewardsOrBoth.Both,
+            computeClaimableDividendsOrRewards(
+                DividendsOrRewards.Both,
                 stakeIndex
             );
     }
 
-    function computeClaimableDividendsOrRewardsOrBoth(
-        DividendsOrRewardsOrBoth filter,
+    function computeClaimableDividendsOrRewards(
+        DividendsOrRewards filter,
         uint256 stakeIndex
     ) internal view returns (uint256) {
-        DividendsAndRewards memory result = computeDividendsOrRewardsOrBoth(
+        DividendsAndRewards memory result = computeDividendsOrRewards(
             filter,
             holderStakes[msg.sender][stakeIndex]
         );
@@ -297,20 +302,15 @@ contract Staking is Ownable {
     {
         HolderStake storage holderStake = holderStakes[msg.sender][stakeIndex];
         DividendsAndRewards
-            memory dividendsAndRewards = computeDividendsOrRewardsOrBoth(
-                DividendsOrRewardsOrBoth.Both,
+            memory dividendsAndRewards = computeDividendsOrRewards(
+                DividendsOrRewards.Both,
                 holderStake
             );
         return dividendsAndRewards.claimable - holderStake.withdrawn;
     }
 
-    struct DividendsAndRewards {
-        uint256 claimable;
-        uint256 unclaimable;
-    }
-
-    function computeDividendsOrRewardsOrBoth(
-        DividendsOrRewardsOrBoth filter,
+    function computeDividendsOrRewards(
+        DividendsOrRewards filter,
         HolderStake storage holderStake
     ) internal view returns (DividendsAndRewards memory) {
         // TODO test when not a staker
@@ -335,12 +335,12 @@ contract Staking is Ownable {
                 social = socials[socialIndex];
             }
 
-            if (filter != DividendsOrRewardsOrBoth.Rewards) {
+            if (filter != DividendsOrRewards.Rewards) {
                 claimable +=
                     (focusedBlock.dividends * holderStake.amount) /
                     focusedBlock.totalStake;
             }
-            if (filter != DividendsOrRewardsOrBoth.Dividends) {
+            if (filter != DividendsOrRewards.Dividends) {
                 // Base rewards + time bonus
                 uint256 rewards = (focusedBlock.rewards *
                     holderStake.timeBonusPonderedAmount) /
@@ -474,8 +474,8 @@ contract Staking is Ownable {
         bool precomputed = precomputeRewardsAndDividends(holderStake);
         if (!precomputed) return 0;
         DividendsAndRewards
-            memory dividendsAndRewards = computeDividendsOrRewardsOrBoth(
-                DividendsOrRewardsOrBoth.Both,
+            memory dividendsAndRewards = computeDividendsOrRewards(
+                DividendsOrRewards.Both,
                 holderStake
             );
         uint256 amountToWithdraw = dividendsAndRewards.claimable -
