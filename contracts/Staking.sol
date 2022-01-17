@@ -32,6 +32,9 @@ contract Staking is Ownable {
     uint256 public percentBonusForTwoMonthStaking = 50; // TODO setter
     uint256 public percentBonusForThreeMonthStaking = 100; // TODO setter
 
+    uint256 public minimumGasForBlockComputation = 70000; // TODO setter
+    uint256 public minimumGasForPeupleTransfer = 400000; // TODO setter
+
     struct HolderStake {
         uint256 amount;
         uint256 timeBonusPonderedAmount;
@@ -63,15 +66,10 @@ contract Staking is Ownable {
 
     mapping(address => HolderSocial[]) public holderSocials;
 
-    enum DividendsOrRewards {
-        Dividends,
-        Rewards,
-        Both
-    }
-
     struct DividendsAndRewards {
-        uint256 claimable;
-        uint256 unclaimable;
+        uint256 dividends;
+        uint256 claimableRewards;
+        uint256 unclaimableRewards;
     }
 
     constructor(
@@ -189,12 +187,11 @@ contract Staking is Ownable {
         HolderStake storage holderStake = stakes[stakeIndex];
         if (holderStake.blockedUntil < block.timestamp) {
             DividendsAndRewards
-                memory dividendsAndRewards = computeDividendsOrRewards(
-                    DividendsOrRewards.Both,
+                memory dividendsAndRewards = computeDividendsAndRewardsFor(
                     holderStake
                 );
             uint256 amountToWithdraw = holderStake.amount +
-                dividendsAndRewards.claimable -
+                claimable(dividendsAndRewards) -
                 holderStake.withdrawn;
             currentTotalStake -= holderStake.amount;
             HolderSocial[] storage socials = holderSocials[msg.sender];
@@ -204,7 +201,8 @@ contract Staking is Ownable {
                 (holderStake.amount * currentSocial.percentBonus) /
                 100;
             currentTotalOwnedPeuple -= amountToWithdraw;
-            currentTotalOwnedPeuple -= dividendsAndRewards.unclaimable;
+            // Release unclaimable rewards
+            currentTotalOwnedPeuple -= dividendsAndRewards.unclaimableRewards;
             stakes[stakeIndex] = stakes[stakes.length - 1];
             stakes.pop();
             IERC20(peuple).transfer(msg.sender, amountToWithdraw);
@@ -254,10 +252,8 @@ contract Staking is Ownable {
         returns (uint256)
     {
         return
-            computeClaimableDividendsOrRewards(
-                DividendsOrRewards.Dividends,
-                stakeIndex
-            );
+            computeDividendsAndRewardsFor(holderStakes[msg.sender][stakeIndex])
+                .dividends;
     }
 
     function computeRewards(uint256 stakeIndex)
@@ -266,10 +262,8 @@ contract Staking is Ownable {
         returns (uint256)
     {
         return
-            computeClaimableDividendsOrRewards(
-                DividendsOrRewards.Rewards,
-                stakeIndex
-            );
+            computeDividendsAndRewardsFor(holderStakes[msg.sender][stakeIndex])
+                .claimableRewards;
     }
 
     function computeDividendsAndRewards(uint256 stakeIndex)
@@ -278,21 +272,21 @@ contract Staking is Ownable {
         returns (uint256)
     {
         return
-            computeClaimableDividendsOrRewards(
-                DividendsOrRewards.Both,
-                stakeIndex
+            claimable(
+                computeDividendsAndRewardsFor(
+                    holderStakes[msg.sender][stakeIndex]
+                )
             );
     }
 
-    function computeClaimableDividendsOrRewards(
-        DividendsOrRewards filter,
-        uint256 stakeIndex
-    ) internal view returns (uint256) {
-        DividendsAndRewards memory result = computeDividendsOrRewards(
-            filter,
-            holderStakes[msg.sender][stakeIndex]
-        );
-        return result.claimable;
+    function claimable(DividendsAndRewards memory dividendsAndRewards)
+        internal
+        pure
+        returns (uint256)
+    {
+        return
+            dividendsAndRewards.dividends +
+            dividendsAndRewards.claimableRewards;
     }
 
     function computeWithdrawableDividendsAndRewards(uint256 stakeIndex)
@@ -301,25 +295,22 @@ contract Staking is Ownable {
         returns (uint256)
     {
         HolderStake storage holderStake = holderStakes[msg.sender][stakeIndex];
-        DividendsAndRewards
-            memory dividendsAndRewards = computeDividendsOrRewards(
-                DividendsOrRewards.Both,
-                holderStake
-            );
-        return dividendsAndRewards.claimable - holderStake.withdrawn;
+        return
+            claimable(computeDividendsAndRewardsFor(holderStake)) -
+            holderStake.withdrawn;
     }
 
-    function computeDividendsOrRewards(
-        DividendsOrRewards filter,
-        HolderStake storage holderStake
-    ) internal view returns (DividendsAndRewards memory) {
-        // TODO test when not a staker
-        uint256 claimable = holderStake.precomputedDividends +
-            holderStake.precomputedClaimableRewards;
-        uint256 unclaimable = holderStake.precomputedUnclaimableRewards;
+    function computeDividendsAndRewardsFor(HolderStake storage holderStake)
+        internal
+        view
+        returns (DividendsAndRewards memory)
+    {
+        uint256 dividends = holderStake.precomputedDividends;
+        uint256 claimableRewards = holderStake.precomputedClaimableRewards;
+        uint256 unclaimableRewards = holderStake.precomputedUnclaimableRewards;
         HolderSocial[] storage socials = holderSocials[msg.sender];
         uint256 socialIndex = socials.length - 1;
-        HolderSocial memory social = socials[socialIndex];
+        HolderSocial storage social = socials[socialIndex];
         for (
             uint256 previousBlockNumber = currentBlockNumber;
             previousBlockNumber > holderStake.precomputedUntilBlock &&
@@ -328,38 +319,39 @@ contract Staking is Ownable {
             previousBlockNumber--
         ) {
             uint256 focusedBlockNumber = previousBlockNumber - 1;
-            DayBlock storage focusedBlock = dayBlocks[focusedBlockNumber]; // memory ??
+            DayBlock storage focusedBlock = dayBlocks[focusedBlockNumber];
             // Find relevant social bonus
             while (social.blockNumber > focusedBlockNumber) {
                 socialIndex--;
                 social = socials[socialIndex];
             }
 
-            if (filter != DividendsOrRewards.Rewards) {
-                claimable +=
-                    (focusedBlock.dividends * holderStake.amount) /
-                    focusedBlock.totalStake;
-            }
-            if (filter != DividendsOrRewards.Dividends) {
-                // Base rewards + time bonus
-                uint256 rewards = (focusedBlock.rewards *
-                    holderStake.timeBonusPonderedAmount) /
-                    focusedBlock.totalPonderedStake;
-                // Social bonus rewards
-                rewards +=
-                    (focusedBlock.rewards *
-                        holderStake.amount *
-                        social.percentBonus) /
-                    (focusedBlock.totalPonderedStake * 100);
-                if (focusedBlock.creationTime > holderStake.blockedUntil) {
-                    // expired
-                    unclaimable += rewards;
-                } else {
-                    claimable += rewards;
-                }
+            dividends +=
+                (focusedBlock.dividends * holderStake.amount) /
+                focusedBlock.totalStake;
+            // Base rewards + time bonus
+            uint256 rewards = (focusedBlock.rewards *
+                holderStake.timeBonusPonderedAmount) /
+                focusedBlock.totalPonderedStake;
+            // Social bonus rewards
+            rewards +=
+                (focusedBlock.rewards *
+                    holderStake.amount *
+                    social.percentBonus) /
+                (focusedBlock.totalPonderedStake * 100);
+            if (focusedBlock.creationTime > holderStake.blockedUntil) {
+                // expired
+                unclaimableRewards += rewards;
+            } else {
+                claimableRewards += rewards;
             }
         }
-        return DividendsAndRewards(claimable, unclaimable);
+        return
+            DividendsAndRewards(
+                dividends,
+                claimableRewards,
+                unclaimableRewards
+            );
     }
 
     function precomputeRewardsAndDividends(HolderStake storage holderStake)
@@ -414,9 +406,9 @@ contract Staking is Ownable {
                 holderStake.precomputedClaimableRewards += rewards;
             }
             holderStake.precomputedUntilBlock++;
-            if (gasleft() < 70000) return false; // enough gas for another block
+            if (gasleft() < minimumGasForBlockComputation) return false;
         }
-        return gasleft() > 400000; // enough gas for transfer
+        return true;
     }
 
     function canCreateNewBlock() external view returns (bool) {
@@ -472,15 +464,14 @@ contract Staking is Ownable {
     {
         HolderStake storage holderStake = holderStakes[msg.sender][stakeIndex];
         bool precomputed = precomputeRewardsAndDividends(holderStake);
-        if (!precomputed) return 0;
+        if (!precomputed || gasleft() < minimumGasForPeupleTransfer) return 0;
         DividendsAndRewards
-            memory dividendsAndRewards = computeDividendsOrRewards(
-                DividendsOrRewards.Both,
+            memory dividendsAndRewards = computeDividendsAndRewardsFor(
                 holderStake
             );
-        uint256 amountToWithdraw = dividendsAndRewards.claimable -
+        uint256 amountToWithdraw = claimable(dividendsAndRewards) -
             holderStake.withdrawn;
-        holderStake.withdrawn = dividendsAndRewards.claimable;
+        holderStake.withdrawn += amountToWithdraw;
         // TODO release unclaimable ?
         currentTotalOwnedPeuple -= amountToWithdraw;
         IERC20(peuple).transfer(msg.sender, amountToWithdraw);
