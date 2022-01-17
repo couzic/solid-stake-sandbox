@@ -733,7 +733,7 @@ describe("PEUPLE", () => {
       beforeEach(async () => {
         await buyAndStake(holder_1, oneBillion);
       });
-      const blocks = 200;
+      const blocks = 70;
       describe(`when ${blocks} blocks with dividends are created`, () => {
         beforeEach(async () => {
           for await (let i of range(0, blocks)) {
@@ -759,14 +759,14 @@ describe("PEUPLE", () => {
           });
         });
       });
-      describe("when 150 blocks with rewards are created", () => {
+      describe(`when ${blocks} blocks with rewards are created`, () => {
         beforeEach(async () => {
           await days(31);
           await peuple
             .connect(peupleOwner)
             .transfer(staking.address, oneBillion);
           await createNewBlock();
-          for await (let i of range(0, 150)) {
+          for await (let i of range(0, blocks)) {
             await peuple
               .connect(peupleOwner)
               .transfer(staking.address, oneMillion.mul(10));
