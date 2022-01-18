@@ -926,5 +926,99 @@ describe("PEUPLE", () => {
         });
       });
     });
+    const maxSocialScores = 20;
+    describe(`when bought and staked one billion`, () => {
+      describe(`when ${maxSocialScores} already added`, () => {
+        beforeEach(async () => {
+          await buyAndStake(holder_1, oneBillion); // initializes with first social
+          for await (let i of range(1, maxSocialScores)) {
+            await cake.connect(cakeOwner).transfer(staking.address, ether(10));
+            await days(2);
+            await createNewBlock();
+            await staking
+              .connect(stakingOwner)
+              .setHolderSocialPercentBonus(holder_1.address, i);
+          }
+        });
+        it(`can't add another social score`, async () => {
+          await cake.connect(cakeOwner).transfer(staking.address, ether(10));
+          await days(2);
+          await createNewBlock();
+          await expect(
+            staking
+              .connect(stakingOwner)
+              .setHolderSocialPercentBonus(holder_1.address, 0)
+          ).to.be.rejectedWith(Error);
+        });
+        it(`can set unlimited social scores for single block`, async () => {
+          for await (let i of range(0, 10)) {
+            await staking
+              .connect(stakingOwner)
+              .setHolderSocialPercentBonus(holder_1.address, i);
+          }
+        });
+        describe("when withdrawn", () => {
+          beforeEach(async () => {
+            await staking.connect(holder_1).withdrawRewardsAndDividends(0);
+          });
+          it(`can add another ${maxSocialScores} socials`, async () => {
+            for await (let i of range(1, maxSocialScores)) {
+              await cake
+                .connect(cakeOwner)
+                .transfer(staking.address, ether(10));
+              await days(2);
+              await createNewBlock();
+              await staking
+                .connect(stakingOwner)
+                .setHolderSocialPercentBonus(holder_1.address, i);
+            }
+          });
+        });
+      });
+    });
+    describe(`when bought and staked one billion, twice`, () => {
+      beforeEach(async () => {
+        await buyAndStake(holder_1, oneBillion);
+        await buyAndStake(holder_1, oneBillion);
+      });
+      describe(`when added ${maxSocialScores} social scores`, () => {
+        beforeEach(async () => {
+          for await (let i of range(1, maxSocialScores)) {
+            await cake.connect(cakeOwner).transfer(staking.address, ether(10));
+            await days(2);
+            await createNewBlock();
+            await staking
+              .connect(stakingOwner)
+              .setHolderSocialPercentBonus(holder_1.address, i);
+          }
+        });
+        describe("when withdrawn first stake ONLY", () => {
+          beforeEach(async () => {
+            await staking.connect(holder_1).withdrawRewardsAndDividends(0);
+          });
+          it(`can NOT add another social`, async () => {
+            await cake.connect(cakeOwner).transfer(staking.address, ether(10));
+            await days(2);
+            await createNewBlock();
+            await expect(
+              staking
+                .connect(stakingOwner)
+                .setHolderSocialPercentBonus(holder_1.address, 0)
+            ).to.be.rejectedWith(Error);
+          });
+        });
+      });
+    });
+    it(`can add ${maxSocialScores + 1} socials`, async () => {
+      await buyAndStake(holder_2, oneBillion);
+      for await (let i of range(0, maxSocialScores + 1)) {
+        await cake.connect(cakeOwner).transfer(staking.address, ether(10));
+        await days(2);
+        await createNewBlock();
+        await staking
+          .connect(stakingOwner)
+          .setHolderSocialPercentBonus(holder_1.address, i + 1);
+      }
+    });
   });
 });

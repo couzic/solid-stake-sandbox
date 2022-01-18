@@ -34,6 +34,7 @@ contract Staking is Ownable {
 
     uint256 public minimumGasForBlockComputation = 70000; // TODO setter
     uint256 public minimumGasForPeupleTransfer = 400000; // TODO setter
+    uint256 public maxSocials = 20; // TODO setter MIN 10 MAX 100
 
     struct HolderStake {
         uint256 amount;
@@ -109,15 +110,49 @@ contract Staking is Ownable {
         HolderSocial storage currentSocial = socials[socials.length - 1];
         require(currentSocial.percentBonus != bonus, "Staking: same bonus");
         HolderStake[] storage stakes = holderStakes[staker];
+        if (socials.length >= maxSocials - 1) {
+            HolderSocial storage firstSocial = socials[0];
+            if (stakes.length == 0) {
+                socials[0] = socials[socials.length - 1];
+                socials[socials.length - 1] = firstSocial;
+                while (socials.length > 1) {
+                    socials.pop();
+                }
+            } else {
+                uint256 firstUncomputedBlock = stakes[0].precomputedUntilBlock;
+                for (uint256 i = 1; i < stakes.length; i++) {
+                    HolderStake storage focusedStake = stakes[i];
+                    if (
+                        focusedStake.precomputedUntilBlock <
+                        firstUncomputedBlock
+                    ) {
+                        firstUncomputedBlock = focusedStake
+                            .precomputedUntilBlock;
+                    }
+                }
+                while (firstSocial.blockNumber < firstUncomputedBlock) {
+                    for (uint256 i = 0; i < socials.length - 1; i++) {
+                        socials[i] = socials[i + 1];
+                    }
+                    socials[socials.length - 1] = firstSocial;
+                    socials.pop();
+                    firstSocial = socials[0];
+                }
+            }
+        }
+        if (currentSocial.blockNumber == currentBlockNumber) {
+            currentSocial.percentBonus = bonus;
+        } else {
+            require(
+                socials.length < maxSocials,
+                "Staking: max socials reached"
+            );
+            socials.push(HolderSocial(currentBlockNumber, bonus));
+        }
         uint256 currentHolderPonderedStake = computePonderedStakeFor(
             stakes,
             currentSocial.percentBonus
         );
-        if (currentSocial.blockNumber == currentBlockNumber) {
-            currentSocial.percentBonus = bonus;
-        } else {
-            socials.push(HolderSocial(currentBlockNumber, bonus));
-        }
         currentTotalPonderedStake -= currentHolderPonderedStake;
         currentTotalPonderedStake += computePonderedStakeFor(stakes, bonus);
     }
