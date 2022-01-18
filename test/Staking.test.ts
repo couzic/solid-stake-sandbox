@@ -657,6 +657,22 @@ describe("PEUPLE", () => {
     });
     describe("when holder with social bonus buys and stakes for one month and for one thousand cake dividends after 30 days", () => {
       beforeEach(async () => {
+        await staking
+          .connect(stakingOwner)
+          .setHolderSocialPercentBonus(holder_1.address, 100);
+        await buyAndStake(holder_1, oneBillion);
+        await cake.connect(cakeOwner).transfer(staking.address, oneThousand);
+        await days(2);
+        await createNewBlock();
+        await days(30);
+      });
+      it("can unstake", async () => {
+        await staking.connect(holder_1).unstake(0);
+        expect(await staking.currentTotalPonderedStake()).to.equal(0);
+      });
+    });
+    describe("when holder buys and stakes for one month and has social bonus and for one thousand cake dividends after 30 days", () => {
+      beforeEach(async () => {
         await buyAndStake(holder_1, oneBillion);
         await staking
           .connect(stakingOwner)
@@ -667,6 +683,28 @@ describe("PEUPLE", () => {
         await days(30);
       });
       it("can unstake", async () => {
+        await staking.connect(holder_1).unstake(0);
+        expect(await staking.currentTotalPonderedStake()).to.equal(0);
+      });
+    });
+    describe("when holder buys and stakes for two months, after 61 days", () => {
+      beforeEach(async () => {
+        await buyAndStake(holder_1, oneBillion, 2);
+        await days(61);
+      });
+      it("can unstake", async () => {
+        await staking.connect(holder_1).unstake(0);
+        expect(await staking.currentTotalPonderedStake()).to.equal(0);
+      });
+    });
+    describe("when holder buys and stakes twice, after 31 days", () => {
+      beforeEach(async () => {
+        await buyAndStake(holder_1, oneBillion);
+        await buyAndStake(holder_1, oneBillion);
+        await days(31);
+      });
+      it("can unstake all", async () => {
+        await staking.connect(holder_1).unstake(0);
         await staking.connect(holder_1).unstake(0);
         expect(await staking.currentTotalPonderedStake()).to.equal(0);
       });
@@ -1020,5 +1058,10 @@ describe("PEUPLE", () => {
           .setHolderSocialPercentBonus(holder_1.address, i + 1);
       }
     });
+    // describe("when single holder stakes one billion for one month", () => {
+    //   beforeEach(async () => {
+    //     await buyAndStake(holder_1, oneBillion);
+    //   });
+    // });
   });
 });

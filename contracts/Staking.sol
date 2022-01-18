@@ -105,11 +105,15 @@ contract Staking is Ownable {
     {
         // TODO delete all outdated socials (also take into account precomputations, no need to keep it if it's already precomputed)
         require(bonus <= 200, "Staking: social bonus <= 200");
+        HolderStake[] storage stakes = holderStakes[staker];
         HolderSocial[] storage socials = holderSocials[staker];
         ensureHolderSocialsInitialized(socials);
         HolderSocial storage currentSocial = socials[socials.length - 1];
+        uint256 currentHolderPonderedStake = computePonderedStakes(
+            stakes,
+            currentSocial.percentBonus
+        );
         require(currentSocial.percentBonus != bonus, "Staking: same bonus");
-        HolderStake[] storage stakes = holderStakes[staker];
         if (socials.length >= maxSocials - 1) {
             HolderSocial storage firstSocial = socials[0];
             if (stakes.length == 0) {
@@ -149,12 +153,8 @@ contract Staking is Ownable {
             );
             socials.push(HolderSocial(currentBlockNumber, bonus));
         }
-        uint256 currentHolderPonderedStake = computePonderedStakeFor(
-            stakes,
-            currentSocial.percentBonus
-        );
         currentTotalPonderedStake -= currentHolderPonderedStake;
-        currentTotalPonderedStake += computePonderedStakeFor(stakes, bonus);
+        currentTotalPonderedStake += computePonderedStakes(stakes, bonus);
     }
 
     function ensureHolderSocialsInitialized(HolderSocial[] storage socials)
@@ -202,14 +202,18 @@ contract Staking is Ownable {
                 0 // withdrawn
             )
         );
+        HolderStake storage holderStake = stakes[stakes.length - 1];
         currentTotalStake += amount;
-        currentTotalPonderedStake += timeBonusPonderedAmount;
+        HolderSocial[] storage socials = holderSocials[msg.sender];
+        ensureHolderSocialsInitialized(socials);
+        currentTotalPonderedStake += computePonderedStake(
+            holderStake,
+            socials[socials.length - 1].percentBonus
+        );
         currentTotalOwnedPeuple += amount;
         uint256 allowance = IERC20(peuple).allowance(msg.sender, address(this));
         require(allowance >= amount, "Staking: check allowance");
         IERC20(peuple).transferFrom(msg.sender, address(this), amount);
-
-        ensureHolderSocialsInitialized(holderSocials[msg.sender]);
 
         createNewBlock();
     }
@@ -231,10 +235,10 @@ contract Staking is Ownable {
             currentTotalStake -= holderStake.amount;
             HolderSocial[] storage socials = holderSocials[msg.sender];
             HolderSocial storage currentSocial = socials[socials.length - 1];
-            currentTotalPonderedStake -=
-                holderStake.amount +
-                (holderStake.amount * currentSocial.percentBonus) /
-                100;
+            currentTotalPonderedStake -= computePonderedStake(
+                holderStake,
+                currentSocial.percentBonus
+            );
             currentTotalOwnedPeuple -= amountToWithdraw;
             // Release unclaimable rewards
             currentTotalOwnedPeuple -= dividendsAndRewards.unclaimableRewards;
@@ -268,17 +272,26 @@ contract Staking is Ownable {
         return total;
     }
 
-    function computePonderedStakeFor(
+    function computePonderedStakes(
         HolderStake[] storage stakes,
         uint256 socialBonus
     ) internal view returns (uint256) {
         uint256 arrayLength = stakes.length;
         uint256 total = 0;
         for (uint256 i = 0; i < arrayLength; i++) {
-            total += stakes[i].timeBonusPonderedAmount;
-            total += (stakes[i].amount * socialBonus) / 100;
+            total += computePonderedStake(stakes[i], socialBonus);
         }
         return total;
+    }
+
+    function computePonderedStake(
+        HolderStake storage holderStake,
+        uint256 socialBonus
+    ) internal view returns (uint256) {
+        return
+            holderStake.timeBonusPonderedAmount +
+            (holderStake.amount * socialBonus) /
+            100;
     }
 
     function computeDividends(uint256 stakeIndex)
