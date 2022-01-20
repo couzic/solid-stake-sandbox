@@ -76,6 +76,10 @@ describe("PEUPLE", () => {
   ) => Promise<void>;
   let createNewBlock: () => Promise<void>;
   let sendCakeRewards: (amount: BigNumber) => Promise<void>;
+  let sendPeupleRewards: (
+    amount: BigNumber,
+    blockDays?: number
+  ) => Promise<void>;
   beforeEach(async () => {
     const [swapPoolOwner, co, po, bo, so, h1, h2, h3, h4] =
       await ethers.getSigners();
@@ -118,6 +122,13 @@ describe("PEUPLE", () => {
     sendCakeRewards = async (amount) => {
       await cake.connect(cakeOwner).approve(staking.address, amount);
       await staking.connect(cakeOwner).sendCakeRewards(amount);
+    };
+    sendPeupleRewards = async (amount, blockDays) => {
+      await peuple.connect(peupleOwner).transfer(staking.address, amount);
+      if (blockDays) {
+        await days(blockDays);
+        await createNewBlock();
+      }
     };
 
     const cakeFactory = await ethers.getContractFactory("CAKE");
@@ -519,10 +530,7 @@ describe("PEUPLE", () => {
         });
       });
       it("redistributes all peuple rewards to holder", async () => {
-        await peuple.connect(peupleOwner).approve(staking.address, oneBillion);
-        await peuple.connect(peupleOwner).transfer(staking.address, oneBillion);
-        await days(2);
-        await createNewBlock();
+        await sendPeupleRewards(oneBillion, 2);
         const rewards = await staking.connect(holder_1).computeRewards(0);
         expect(rewards).to.equal(oneBillion);
       });
@@ -800,16 +808,10 @@ describe("PEUPLE", () => {
       describe(`when ${blocks} blocks with rewards are created`, () => {
         beforeEach(async () => {
           await days(31);
-          await peuple
-            .connect(peupleOwner)
-            .transfer(staking.address, oneBillion);
+          await sendPeupleRewards(oneBillion);
           await createNewBlock();
           for await (let i of range(0, blocks)) {
-            await peuple
-              .connect(peupleOwner)
-              .transfer(staking.address, oneMillion.mul(10));
-            await days(2);
-            await createNewBlock();
+            await sendPeupleRewards(oneMillion.mul(10), 2);
           }
         });
         it("runs out of gas when computing rewards", async () => {
@@ -836,11 +838,7 @@ describe("PEUPLE", () => {
         });
         describe("when one billion peuple reward received", () => {
           beforeEach(async () => {
-            await peuple
-              .connect(peupleOwner)
-              .transfer(staking.address, oneBillion);
-            await days(2);
-            await createNewBlock();
+            await sendPeupleRewards(oneBillion, 2);
           });
           describe("when first holder withdraws", () => {
             beforeEach(async () => {
@@ -848,11 +846,7 @@ describe("PEUPLE", () => {
             });
             describe("when another billion peuple reward received", () => {
               beforeEach(async () => {
-                await peuple
-                  .connect(peupleOwner)
-                  .transfer(staking.address, oneBillion);
-                await days(2);
-                await createNewBlock();
+                await sendPeupleRewards(oneBillion, 2);
               });
               it("precomputes rewards with social bonus", async () => {
                 const rewards_1 = await staking
@@ -885,11 +879,7 @@ describe("PEUPLE", () => {
               await staking
                 .connect(stakingOwner)
                 .setHolderSocialPercentBonus(holder_1.address, 0);
-              await peuple
-                .connect(peupleOwner)
-                .transfer(staking.address, oneBillion);
-              await days(2);
-              await createNewBlock();
+              await sendPeupleRewards(oneBillion, 2);
             });
             it("withdraws rewards with social bonus", async () => {
               const rewards_1 = await staking
@@ -923,11 +913,7 @@ describe("PEUPLE", () => {
         });
         describe("when one billion peuple reward received", () => {
           beforeEach(async () => {
-            await peuple
-              .connect(peupleOwner)
-              .transfer(staking.address, oneBillion);
-            await days(2);
-            await createNewBlock();
+            await sendPeupleRewards(oneBillion, 2);
           });
           describe("when first holder withdraws", () => {
             beforeEach(async () => {
@@ -935,11 +921,7 @@ describe("PEUPLE", () => {
             });
             describe("when another billion peuple reward received", () => {
               beforeEach(async () => {
-                await peuple
-                  .connect(peupleOwner)
-                  .transfer(staking.address, oneBillion);
-                await days(2);
-                await createNewBlock();
+                await sendPeupleRewards(oneBillion, 2);
               });
               it("withdraws rewards with time bonus", async () => {
                 const rewards_1 = await staking
@@ -1058,10 +1040,86 @@ describe("PEUPLE", () => {
           .setHolderSocialPercentBonus(holder_1.address, i + 1);
       }
     });
-    // describe("when single holder stakes one billion for one month", () => {
-    //   beforeEach(async () => {
-    //     await buyAndStake(holder_1, oneBillion);
-    //   });
-    // });
+    describe("when single holder buys and stakes one billion", () => {
+      beforeEach(async () => {
+        await buyAndStake(holder_1, oneBillion);
+      });
+      it("can NOT restake after 29 days only", async () => {
+        await days(29);
+        await expect(
+          staking.connect(holder_1).restake(0, 1)
+        ).to.be.rejectedWith(Error);
+      });
+      describe("when another holder buys and stakes one billion also", () => {
+        beforeEach(async () => {
+          await buyAndStake(holder_2, oneBillion);
+        });
+        describe("when one billion peuple rewards received", () => {
+          beforeEach(async () => {
+            await sendPeupleRewards(oneBillion, 2);
+          });
+          describe("after 31 days", () => {
+            beforeEach(async () => {
+              await days(31);
+            });
+            describe("when first holder restakes for 3 months", () => {
+              beforeEach(async () => {
+                await staking.connect(holder_1).restake(0, 3);
+              });
+              it("computes rewards with relevant bonus for each period", async () => {
+                await sendPeupleRewards(oneBillion, 2);
+                const computed_1 = await staking
+                  .connect(holder_1)
+                  .computeRewards(0);
+                await staking.connect(holder_1).withdrawRewardsAndDividends(0);
+                const withdrawn_1 = await peuple.balanceOf(holder_1.address);
+                expect(computed_1)
+                  .to.equal(withdrawn_1)
+                  .to.equal(oneBillion.div(2).add(oneBillion.mul(2).div(3)));
+              });
+            });
+          });
+        });
+      });
+      describe("after 31 days", () => {
+        beforeEach(async () => {
+          await days(31);
+        });
+        it("can restake", async () => {
+          await staking.connect(holder_1).restake(0, 1);
+          await staking.connect(holder_1).unstake(0);
+          expect(await peuple.balanceOf(holder_1.address)).to.equal(0);
+        });
+        describe("when restaking for 3 months", () => {
+          beforeEach(async () => {
+            await staking.connect(holder_1).restake(0, 3);
+          });
+          it("earns rewards with new time bonus", async () => {
+            await buyAndStake(holder_2, oneBillion);
+            await sendPeupleRewards(oneBillion, 2);
+            const rewards_1 = await staking.connect(holder_1).computeRewards(0);
+            const rewards_2 = await staking.connect(holder_2).computeRewards(0);
+            expect(rewards_1).to.equal(oneBillion.mul(2).div(3));
+            expect(rewards_2).to.equal(oneBillion.div(3));
+          });
+        });
+        describe("when rewards received after staking period", () => {
+          beforeEach(async () => {
+            await sendPeupleRewards(oneBillion, 2);
+          });
+          describe("when restaking for one month", () => {
+            beforeEach(async () => {
+              await staking.connect(holder_1).restake(0, 1);
+            });
+            it("receives unclaimed rewards", async () => {
+              const computed = await staking
+                .connect(holder_1)
+                .computeRewards(0);
+              expect(computed).to.equal(oneBillion);
+            });
+          });
+        });
+      });
+    });
   });
 });

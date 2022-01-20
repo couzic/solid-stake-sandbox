@@ -175,17 +175,10 @@ contract Staking is Ownable {
         HolderStake[] storage stakes = holderStakes[msg.sender];
         require(stakes.length < 20, "Staking limited to 20 slots");
 
-        uint256 timeBonusPonderedAmount = amount;
-        if (months == 2) {
-            timeBonusPonderedAmount +=
-                (amount * percentBonusForTwoMonthStaking) /
-                100;
-        }
-        if (months == 3) {
-            timeBonusPonderedAmount +=
-                (amount * percentBonusForThreeMonthStaking) /
-                100;
-        }
+        uint256 timeBonusPonderedAmount = computeTimeBonusPonderedStakeAmount(
+            amount,
+            months
+        );
 
         uint256 blockedUntil = block.timestamp + months * 30 days;
 
@@ -218,7 +211,49 @@ contract Staking is Ownable {
         createNewBlock();
     }
 
-    // TODO Restake
+    function computeTimeBonusPonderedStakeAmount(uint256 amount, uint256 months)
+        internal
+        view
+        returns (uint256 timeBonusPonderedAmount)
+    {
+        timeBonusPonderedAmount = amount;
+        if (months == 2) {
+            timeBonusPonderedAmount +=
+                (amount * percentBonusForTwoMonthStaking) /
+                100;
+        }
+        if (months == 3) {
+            timeBonusPonderedAmount +=
+                (amount * percentBonusForThreeMonthStaking) /
+                100;
+        }
+    }
+
+    function restake(uint256 stakeIndex, uint256 months)
+        external
+        returns (bool)
+    {
+        require(months > 0 && months < 4, "Restaking: 1, 2 or 3 months only");
+        HolderStake[] storage stakes = holderStakes[msg.sender];
+        HolderStake storage holderStake = stakes[stakeIndex];
+        require(
+            holderStake.blockedUntil < block.timestamp,
+            "Restaking: stake still blocked"
+        );
+        bool precomputed = precomputeRewardsAndDividends(holderStake);
+        // TODO Test precomputations AND enough gas to finalize
+        // if (!precomputed) return false;
+        holderStake.blockedUntil = block.timestamp + months * 30 days;
+        uint256 newTimeBonusPonderedStakeAmount = computeTimeBonusPonderedStakeAmount(
+                holderStake.amount,
+                months
+            );
+        currentTotalPonderedStake -= holderStake.timeBonusPonderedAmount;
+        currentTotalPonderedStake += newTimeBonusPonderedStakeAmount;
+        holderStake.timeBonusPonderedAmount = newTimeBonusPonderedStakeAmount;
+        return true;
+    }
+
     function unstake(uint256 stakeIndex) external returns (uint256) {
         createNewBlock();
 
