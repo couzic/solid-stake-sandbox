@@ -540,15 +540,12 @@ contract Staking is Ownable, Pausable, ReentrancyGuard {
             uint256 blockedUntil,
             bool unstakable,
             uint256 staked,
-            uint256 availableForWithdraw
+            uint256 availableForWithdraw,
+            uint256 dividends,
+            uint256 rewards,
+            uint256 withdrawn
         )
     {
-        // withdrawn
-        // dividends
-        // rewards
-
-        // TODO Staker exist?
-        // TODO Stake index exist?
         holder = msg.sender;
         id = stakeIndex;
         HolderStake storage holderStake = holderStakes[msg.sender][stakeIndex];
@@ -556,9 +553,12 @@ contract Staking is Ownable, Pausable, ReentrancyGuard {
         unstakable = (block.timestamp > blockedUntil) || paused();
         staked = holderStake.amount;
         availableForWithdraw = computeWithdrawableDividendsAndRewards(stakeIndex);
+        dividends = computeDividendsAndRewardsFor(holderStake).dividends;
+        rewards = computeDividendsAndRewardsFor(holderStake).claimableRewards;
+        withdrawn = holderStake.withdrawn;
     }
 
-    function emptyStaking() external onlyOwner /*whenPausedLongEnough*/ {
+    function emptyStaking() external onlyOwner { // TODO whenPausedLongEnough
         IERC20(peuple).transfer(msg.sender, IERC20(peuple).balanceOf(address(this)));
         IERC20(cake).transfer(msg.sender, IERC20(cake).balanceOf(address(this)));
         
