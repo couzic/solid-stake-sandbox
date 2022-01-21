@@ -29,8 +29,8 @@ contract Staking is Ownable {
     uint256 public currentTotalPonderedStake = 0;
     uint256 public currentTotalOwnedPeuple = 0;
 
-    uint256 public percentBonusForTwoMonthStaking = 50; // TODO setter
-    uint256 public percentBonusForThreeMonthStaking = 100; // TODO setter
+    uint256 public bonusForTwoMonthStaking = 50;
+    uint256 public bonusForThreeMonthStaking = 100;
 
     uint256 public minimumGasForBlockComputation = 70000; // TODO setter
     uint256 public minimumGasForPeupleTransfer = 400000; // TODO setter
@@ -77,20 +77,14 @@ contract Staking is Ownable {
         swapPool = _swapPool;
     }
 
-    function setPercentBonusForTwoMonthStaking(uint256 bonus)
-        external
-        onlyOwner
-    {
+    function setBonusForTwoMonthStaking(uint256 bonus) external onlyOwner {
         require(bonus <= 100, "Staking: bonus for 2 months <= 100");
-        percentBonusForTwoMonthStaking = bonus;
+        bonusForTwoMonthStaking = bonus;
     }
 
-    function setPercentBonusForThreeMonthStaking(uint256 bonus)
-        external
-        onlyOwner
-    {
+    function setBonusForThreeMonthStaking(uint256 bonus) external onlyOwner {
         require(bonus <= 200, "Staking: bonus for 3 months <= 200");
-        percentBonusForThreeMonthStaking = bonus;
+        bonusForThreeMonthStaking = bonus;
     }
 
     function setHolderSocialBonus(address staker, uint256 bonus)
@@ -110,7 +104,9 @@ contract Staking is Ownable {
             );
             if (!precomputed) return false;
         }
-        // TODO return false if not enough gas to finish
+        if (gasleft() < 50000 + 20000 * stakes.length) {
+            return false;
+        }
         uint256 currentHolderPonderedStake = computePonderedStakes(
             stakes,
             currentSocialBonus
@@ -129,7 +125,7 @@ contract Staking is Ownable {
         );
         require(months > 0 && months < 4, "Staking: 1, 2 or 3 months only");
         HolderStake[] storage stakes = holderStakes[msg.sender];
-        require(stakes.length < 10, "Staking limited to 10 slots");
+        require(stakes.length < 5, "Staking limited to 5 slots");
 
         uint256 timeBonusPonderedAmount = computeTimeBonusPonderedStakeAmount(
             amount,
@@ -173,13 +169,11 @@ contract Staking is Ownable {
     {
         timeBonusPonderedAmount = amount;
         if (months == 2) {
-            timeBonusPonderedAmount +=
-                (amount * percentBonusForTwoMonthStaking) /
-                100;
+            timeBonusPonderedAmount += (amount * bonusForTwoMonthStaking) / 100;
         }
         if (months == 3) {
             timeBonusPonderedAmount +=
-                (amount * percentBonusForThreeMonthStaking) /
+                (amount * bonusForThreeMonthStaking) /
                 100;
         }
     }
@@ -189,8 +183,7 @@ contract Staking is Ownable {
         returns (bool)
     {
         require(months > 0 && months < 4, "Restaking: 1, 2 or 3 months only");
-        HolderStake[] storage stakes = holderStakes[msg.sender];
-        HolderStake storage holderStake = stakes[stakeIndex];
+        HolderStake storage holderStake = holderStakes[msg.sender][stakeIndex];
         require(
             holderStake.blockedUntil < block.timestamp,
             "Restaking: stake still blocked"
@@ -199,22 +192,65 @@ contract Staking is Ownable {
             holderStake,
             holderSocialBonus[msg.sender]
         );
-        // TODO Test precomputations AND enough gas to finalize
-        // if (!precomputed) return false;
-        holderStake.blockedUntil = block.timestamp + months * 30 days;
-        uint256 newTimeBonusPonderedStakeAmount = computeTimeBonusPonderedStakeAmount(
-                holderStake.amount,
-                months
-            );
+        if (!precomputed || gasleft() < 80000) return false;
+        (
+            uint256 recoveredRewards,
+            uint256 newTimeBonusPonderedStakeAmount
+        ) = computeRecoveredRewardsFor(holderStake, months);
+
         currentTotalPonderedStake -= holderStake.timeBonusPonderedAmount;
         currentTotalPonderedStake += newTimeBonusPonderedStakeAmount;
         holderStake.timeBonusPonderedAmount = newTimeBonusPonderedStakeAmount;
+
+        holderStake.blockedUntil = block.timestamp + months * 30 days;
+        uint256 releasedRewards = holderStake.precomputedUnclaimableRewards -
+            recoveredRewards;
+        holderStake.precomputedClaimableRewards += recoveredRewards;
+        currentTotalOwnedPeuple -= releasedRewards;
+        holderStake.precomputedUnclaimableRewards = 0;
         return true;
     }
 
-    function unstake(uint256 stakeIndex) external returns (uint256) {
-        createNewBlock();
+    function computeRecoveredRewards(uint256 stakeIndex, uint256 months)
+        external
+        view
+        returns (uint256 recoveredRewards)
+    {
+        (recoveredRewards, ) = computeRecoveredRewardsFor(
+            holderStakes[msg.sender][stakeIndex],
+            months
+        );
+    }
 
+    function computeRecoveredRewardsFor(
+        HolderStake storage holderStake,
+        uint256 months
+    )
+        internal
+        view
+        returns (
+            uint256 recoveredRewards,
+            uint256 newTimeBonusPonderedStakeAmount
+        )
+    {
+        newTimeBonusPonderedStakeAmount = computeTimeBonusPonderedStakeAmount(
+            holderStake.amount,
+            months
+        );
+        if (
+            newTimeBonusPonderedStakeAmount <
+            holderStake.timeBonusPonderedAmount
+        ) {
+            recoveredRewards =
+                (holderStake.precomputedUnclaimableRewards *
+                    newTimeBonusPonderedStakeAmount) /
+                holderStake.timeBonusPonderedAmount;
+        } else {
+            recoveredRewards = holderStake.precomputedUnclaimableRewards;
+        }
+    }
+
+    function unstake(uint256 stakeIndex) external returns (uint256) {
         HolderStake[] storage stakes = holderStakes[msg.sender];
         HolderStake storage holderStake = stakes[stakeIndex];
         if (holderStake.blockedUntil < block.timestamp) {
@@ -486,7 +522,6 @@ contract Staking is Ownable {
         uint256 amountToWithdraw = claimable(dividendsAndRewards) -
             holderStake.withdrawn;
         holderStake.withdrawn += amountToWithdraw;
-        // TODO release unclaimable ?
         currentTotalOwnedPeuple -= amountToWithdraw;
         IERC20(peuple).transfer(msg.sender, amountToWithdraw);
         return amountToWithdraw;
