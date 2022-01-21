@@ -5,7 +5,7 @@ import "./HitchensUnorderedAddressSet.sol";
 import "./OwnableStaking.sol";
 import "./PausableStaking.sol";
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
-import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "hardhat/console.sol";
 
 import "./IUniswapV2Pair.sol";
@@ -13,6 +13,9 @@ import "./IUniswapV2Factory.sol";
 import "./IUniswapV2Router.sol";
 
 contract Staking is Ownable, Pausable, ReentrancyGuard {
+
+    using SafeERC20 for IERC20;
+
     uint256 public currentBlockCreationTime = block.timestamp;
     uint256 public currentBlockNumber = 0;
     uint256 public minimumBlockAge = 1 days;
@@ -49,11 +52,6 @@ contract Staking is Ownable, Pausable, ReentrancyGuard {
         uint256 withdrawn;
     }
 
-    struct HolderSocial {
-        uint256 blockNumber;
-        uint256 percentBonus;
-    }
-
     struct DayBlock {
         uint256 creationTime;
         uint256 totalStake;
@@ -66,7 +64,7 @@ contract Staking is Ownable, Pausable, ReentrancyGuard {
 
     mapping(address => HolderStake[]) public holderStakes;
 
-    mapping(address => HolderSocial[]) public holderSocials;
+    mapping(address => uint256) public holderSocialBonus;
 
     struct DividendsAndRewards {
         uint256 dividends;
@@ -75,6 +73,7 @@ contract Staking is Ownable, Pausable, ReentrancyGuard {
     }
     
     event Stake(address staker, uint256 amount, uint256 duration);
+    event Restake(address staker, uint duration);
     event Unstake(address staker, uint256 amount);
     event Swap(uint256 cake, uint256 peuple);
     event NewBlock(uint256 id, uint256 time);
@@ -102,28 +101,32 @@ contract Staking is Ownable, Pausable, ReentrancyGuard {
         percentBonusForThreeMonthStaking = bonus;
     }
 
-    function setHolderSocialPercentBonus(address staker, uint256 bonus)
+    function setHolderSocialBonus(address staker, uint256 bonus)
         external
         onlyPusher
+        returns (bool)
     {
-        // TODO delete all outdated socials (also take into account precomputations, no need to keep it if it's already precomputed)
         require(bonus <= 200, "Staking: social bonus <= 200");
-        HolderSocial[] storage socials = holderSocials[staker];
-        ensureHolderSocialsInitialized(socials);
-        HolderSocial storage currentSocial = socials[socials.length - 1];
-        require(currentSocial.percentBonus != bonus, "Staking: same bonus");
+        uint256 currentSocialBonus = holderSocialBonus[staker];
+        require(currentSocialBonus != bonus, "Staking: same social bonus");
         HolderStake[] storage stakes = holderStakes[staker];
-        uint256 currentHolderPonderedStake = computePonderedStakeFor(
-            stakes,
-            currentSocial.percentBonus
-        );
-        if (currentSocial.blockNumber == currentBlockNumber) {
-            currentSocial.percentBonus = bonus;
-        } else {
-            socials.push(HolderSocial(currentBlockNumber, bonus));
+        for (uint256 i = 0; i < stakes.length; i++) {
+            HolderStake storage holderStake = stakes[i];
+            bool precomputed = precomputeDividendsAndRewards(
+                holderStake,
+                currentSocialBonus
+            );
+            if (!precomputed) return false;
         }
+        // TODO return false if not enough gas to finish
+        uint256 currentHolderPonderedStake = computePonderedStakes(
+            stakes,
+            currentSocialBonus
+        );
+        holderSocialBonus[staker] = bonus;
         currentTotalPonderedStake -= currentHolderPonderedStake;
-        currentTotalPonderedStake += computePonderedStakeFor(stakes, bonus);
+        currentTotalPonderedStake += computePonderedStakes(stakes, bonus);
+        return true;
     }
 
     function setMinimumCakeForSwap(uint256 _minimumCakeForSwap) external onlyOwner {
@@ -146,15 +149,7 @@ contract Staking is Ownable, Pausable, ReentrancyGuard {
         cake = _cake;
     }
 
-    function ensureHolderSocialsInitialized(HolderSocial[] storage socials)
-        internal
-    {
-        if (socials.length == 0) {
-            socials.push(HolderSocial(0, 0));
-        }
-    }
-
-    function stake(uint256 amount, uint256 months) whenNotPaused external {
+    function stake(uint256 amount, uint256 months) external whenNotPaused {
         require(amount >= 1 ether, "Staking: Cannot stake less than 1 token");
         require(
             amount <= MAX_STAKE,
@@ -162,19 +157,12 @@ contract Staking is Ownable, Pausable, ReentrancyGuard {
         );
         require(months > 0 && months < 4, "Staking: 1, 2 or 3 months only");
         HolderStake[] storage stakes = holderStakes[msg.sender];
-        require(stakes.length < 20, "Staking limited to 20 slots");
+        require(stakes.length < 10, "Staking limited to 10 slots");
 
-        uint256 timeBonusPonderedAmount = amount;
-        if (months == 2) {
-            timeBonusPonderedAmount +=
-                (amount * percentBonusForTwoMonthStaking) /
-                100;
-        }
-        if (months == 3) {
-            timeBonusPonderedAmount +=
-                (amount * percentBonusForThreeMonthStaking) /
-                100;
-        }
+        uint256 timeBonusPonderedAmount = computeTimeBonusPonderedStakeAmount(
+            amount,
+            months
+        );
 
         uint256 blockedUntil = block.timestamp + months * 30 days;
 
@@ -191,22 +179,70 @@ contract Staking is Ownable, Pausable, ReentrancyGuard {
                 0 // withdrawn
             )
         );
+        HolderStake storage holderStake = stakes[stakes.length - 1];
         currentTotalStake += amount;
-        currentTotalPonderedStake += timeBonusPonderedAmount;
+        uint256 socialBonus = holderSocialBonus[msg.sender];
+        currentTotalPonderedStake += computePonderedStake(
+            holderStake,
+            socialBonus
+        );
         currentTotalOwnedPeuple += amount;
         uint256 allowance = IERC20(peuple).allowance(msg.sender, address(this));
         require(allowance >= amount, "Staking: check the PEUPLE allowance"); 
-        IERC20(peuple).transferFrom(msg.sender, address(this), amount);
+        IERC20(peuple).safeTransferFrom(msg.sender, address(this), amount);
 
         emit Stake(msg.sender, amount, months);
-
-        ensureHolderSocialsInitialized(holderSocials[msg.sender]);
-
         createNewBlock();
     }
 
-    // TODO Restake
-        function unstake(uint256 stakeIndex) external nonReentrant returns (uint256) {
+    function computeTimeBonusPonderedStakeAmount(uint256 amount, uint256 months)
+        internal
+        view
+        returns (uint256 timeBonusPonderedAmount)
+    {
+        timeBonusPonderedAmount = amount;
+        if (months == 2) {
+            timeBonusPonderedAmount +=
+                (amount * percentBonusForTwoMonthStaking) /
+                100;
+        }
+        if (months == 3) {
+            timeBonusPonderedAmount +=
+                (amount * percentBonusForThreeMonthStaking) /
+                100;
+        }
+    }
+
+    function restake(uint256 stakeIndex, uint256 months)
+        external
+        returns (bool)
+    {
+        require(months > 0 && months < 4, "Restaking: 1, 2 or 3 months only");
+        HolderStake[] storage stakes = holderStakes[msg.sender];
+        HolderStake storage holderStake = stakes[stakeIndex];
+        require(
+            holderStake.blockedUntil < block.timestamp,
+            "Restaking: stake still blocked"
+        );
+        bool precomputed = precomputeDividendsAndRewards(
+            holderStake,
+            holderSocialBonus[msg.sender]
+        );
+        // TODO Test precomputations AND enough gas to finalize
+        // if (!precomputed) return false;
+        holderStake.blockedUntil = block.timestamp + months * 30 days;
+        uint256 newTimeBonusPonderedStakeAmount = computeTimeBonusPonderedStakeAmount(
+                holderStake.amount,
+                months
+            );
+        currentTotalPonderedStake -= holderStake.timeBonusPonderedAmount;
+        currentTotalPonderedStake += newTimeBonusPonderedStakeAmount;
+        holderStake.timeBonusPonderedAmount = newTimeBonusPonderedStakeAmount;
+        emit Restake(msg.sender, months);
+        return true;
+    }
+
+    function unstake(uint256 stakeIndex) external nonReentrant returns (uint256) {
         createNewBlock();
 
         HolderStake[] storage stakes = holderStakes[msg.sender];
@@ -220,18 +256,16 @@ contract Staking is Ownable, Pausable, ReentrancyGuard {
                 claimable(dividendsAndRewards) -
                 holderStake.withdrawn;
             currentTotalStake -= holderStake.amount;
-            HolderSocial[] storage socials = holderSocials[msg.sender];
-            HolderSocial storage currentSocial = socials[socials.length - 1];
-            currentTotalPonderedStake -=
-                holderStake.amount +
-                (holderStake.amount * currentSocial.percentBonus) /
-                100;
+            currentTotalPonderedStake -= computePonderedStake(
+                holderStake,
+                holderSocialBonus[msg.sender]
+            );
             currentTotalOwnedPeuple -= amountToWithdraw;
             // Release unclaimable rewards
             currentTotalOwnedPeuple -= dividendsAndRewards.unclaimableRewards;
             stakes[stakeIndex] = stakes[stakes.length - 1];
             stakes.pop();
-            IERC20(peuple).transfer(msg.sender, amountToWithdraw);
+            IERC20(peuple).safeTransfer(msg.sender, amountToWithdraw);
             return amountToWithdraw;
         } else {
             return 0;
@@ -242,7 +276,7 @@ contract Staking is Ownable, Pausable, ReentrancyGuard {
         uint256 allowance = IERC20(cake).allowance(msg.sender, address(this));
         require(allowance >= cakeRewards, "Staking: check the CAKE allowance"); 
 
-        IERC20(cake).transferFrom(msg.sender, address(this), cakeRewards);
+        IERC20(cake).safeTransferFrom(msg.sender, address(this), cakeRewards);
         currentBlockCakeRewards += cakeRewards;
 
         emit RewardsReceived(cakeRewards);
@@ -263,17 +297,26 @@ contract Staking is Ownable, Pausable, ReentrancyGuard {
         return total;
     }
 
-    function computePonderedStakeFor(
+    function computePonderedStakes(
         HolderStake[] storage stakes,
         uint256 socialBonus
     ) internal view returns (uint256) {
         uint256 arrayLength = stakes.length;
         uint256 total = 0;
         for (uint256 i = 0; i < arrayLength; i++) {
-            total += stakes[i].timeBonusPonderedAmount;
-            total += (stakes[i].amount * socialBonus) / 100;
+            total += computePonderedStake(stakes[i], socialBonus);
         }
         return total;
+    }
+
+    function computePonderedStake(
+        HolderStake storage holderStake,
+        uint256 socialBonus
+    ) internal view returns (uint256) {
+        return
+            holderStake.timeBonusPonderedAmount +
+            (holderStake.amount * socialBonus) /
+            100;
     }
 
     function computeDividends(uint256 stakeIndex)
@@ -338,9 +381,7 @@ contract Staking is Ownable, Pausable, ReentrancyGuard {
         uint256 dividends = holderStake.precomputedDividends;
         uint256 claimableRewards = holderStake.precomputedClaimableRewards;
         uint256 unclaimableRewards = holderStake.precomputedUnclaimableRewards;
-        HolderSocial[] storage socials = holderSocials[msg.sender];
-        uint256 socialIndex = socials.length - 1;
-        HolderSocial storage social = socials[socialIndex];
+        uint256 socialBonus = holderSocialBonus[msg.sender];
         for (
             uint256 previousBlockNumber = currentBlockNumber;
             previousBlockNumber > holderStake.precomputedUntilBlock &&
@@ -350,12 +391,8 @@ contract Staking is Ownable, Pausable, ReentrancyGuard {
         ) {
             uint256 focusedBlockNumber = previousBlockNumber - 1;
             DayBlock storage focusedBlock = dayBlocks[focusedBlockNumber];
-            // Find relevant social bonus
-            while (social.blockNumber > focusedBlockNumber) {
-                socialIndex--;
-                social = socials[socialIndex];
-            }
 
+            // Dividends
             dividends +=
                 (focusedBlock.dividends * holderStake.amount) /
                 focusedBlock.totalStake;
@@ -364,11 +401,11 @@ contract Staking is Ownable, Pausable, ReentrancyGuard {
                 holderStake.timeBonusPonderedAmount) /
                 focusedBlock.totalPonderedStake;
             // Social bonus rewards
-            rewards +=
-                (focusedBlock.rewards *
-                    holderStake.amount *
-                    social.percentBonus) /
-                (focusedBlock.totalPonderedStake * 100);
+            if (socialBonus > 0) {
+                rewards +=
+                    (focusedBlock.rewards * holderStake.amount * socialBonus) /
+                    (focusedBlock.totalPonderedStake * 100);
+            }
             if (focusedBlock.creationTime > holderStake.blockedUntil) {
                 // expired
                 unclaimableRewards += rewards;
@@ -384,17 +421,10 @@ contract Staking is Ownable, Pausable, ReentrancyGuard {
             );
     }
 
-    function precomputeRewardsAndDividends(HolderStake storage holderStake)
-        internal
-        returns (bool)
-    {
-        HolderSocial[] storage socials = holderSocials[msg.sender];
-        uint256 socialIndex = 0;
-        HolderSocial storage social = socials[socialIndex];
-        uint256 blockWithNextSocialIndex = currentBlockNumber;
-        if (socials.length > 1) {
-            blockWithNextSocialIndex = socials[socialIndex + 1].blockNumber;
-        }
+    function precomputeDividendsAndRewards(
+        HolderStake storage holderStake,
+        uint256 socialBonus
+    ) internal returns (bool) {
         while (holderStake.precomputedUntilBlock < currentBlockNumber) {
             DayBlock storage focusedBlock = dayBlocks[
                 holderStake.precomputedUntilBlock
@@ -404,31 +434,16 @@ contract Staking is Ownable, Pausable, ReentrancyGuard {
             holderStake.precomputedDividends +=
                 (focusedBlock.dividends * holderStake.amount) /
                 focusedBlock.totalStake;
-
-            // Find relevant social bonus
-            while (
-                holderStake.precomputedUntilBlock == blockWithNextSocialIndex
-            ) {
-                socialIndex++;
-                social = socials[socialIndex];
-                if (socialIndex + 1 == socials.length) {
-                    blockWithNextSocialIndex = currentBlockNumber;
-                } else {
-                    blockWithNextSocialIndex = socials[socialIndex + 1]
-                        .blockNumber;
-                }
-            }
-
             // Base rewards + time bonus
             uint256 rewards = (focusedBlock.rewards *
                 holderStake.timeBonusPonderedAmount) /
                 focusedBlock.totalPonderedStake;
             // Social bonus rewards
-            rewards +=
-                (focusedBlock.rewards *
-                    holderStake.amount *
-                    social.percentBonus) /
-                (focusedBlock.totalPonderedStake * 100);
+            if (socialBonus > 0) {
+                rewards +=
+                    (focusedBlock.rewards * holderStake.amount * socialBonus) /
+                    (focusedBlock.totalPonderedStake * 100);
+            }
             if (focusedBlock.creationTime > holderStake.blockedUntil) {
                 // expired
                 holderStake.precomputedUnclaimableRewards += rewards;
@@ -490,12 +505,15 @@ contract Staking is Ownable, Pausable, ReentrancyGuard {
         emit NewBlock(currentBlockNumber, currentBlockCreationTime);
     }
 
-        function withdrawRewardsAndDividends(uint256 stakeIndex)
+    function withdrawDividendsAndRewards(uint256 stakeIndex)
         external
         returns (uint256)
     {
         HolderStake storage holderStake = holderStakes[msg.sender][stakeIndex];
-        bool precomputed = precomputeRewardsAndDividends(holderStake);
+        bool precomputed = precomputeDividendsAndRewards(
+            holderStake,
+            holderSocialBonus[msg.sender]
+        );
         if (!precomputed || gasleft() < minimumGasForPeupleTransfer) return 0;
         DividendsAndRewards
             memory dividendsAndRewards = computeDividendsAndRewardsFor(
@@ -506,7 +524,7 @@ contract Staking is Ownable, Pausable, ReentrancyGuard {
         holderStake.withdrawn += amountToWithdraw;
         // TODO release unclaimable ?
         currentTotalOwnedPeuple -= amountToWithdraw;
-        IERC20(peuple).transfer(msg.sender, amountToWithdraw);
+        IERC20(peuple).safeTransfer(msg.sender, amountToWithdraw);
         return amountToWithdraw;
     }
 
@@ -558,9 +576,13 @@ contract Staking is Ownable, Pausable, ReentrancyGuard {
         withdrawn = holderStake.withdrawn;
     }
 
+    function getBonus(address holder) external view returns (address, uint256) {
+        return (holder, holderSocialBonus[holder]);
+    }
+
     function emptyStaking() external onlyOwner { // TODO whenPausedLongEnough
-        IERC20(peuple).transfer(msg.sender, IERC20(peuple).balanceOf(address(this)));
-        IERC20(cake).transfer(msg.sender, IERC20(cake).balanceOf(address(this)));
+        IERC20(peuple).safeTransfer(msg.sender, IERC20(peuple).balanceOf(address(this)));
+        IERC20(cake).safeTransfer(msg.sender, IERC20(cake).balanceOf(address(this)));
         
         emit StakingEnded();
     }
