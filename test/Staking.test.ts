@@ -217,9 +217,9 @@ describe("PEUPLE", () => {
     });
     it("stakes one peuple", async () => {
       await stakePeuple(holder_1, ether(1));
-      expect(await staking.connect(holder_1).computeHolderStake()).to.equal(
-        ether(1)
-      );
+      expect(
+        await staking.connect(holder_1).computeHolderTotalStakeAmount()
+      ).to.equal(ether(1));
       expect(await staking.totalStaked()).to.equal(ether(1));
     });
     it("stakes half a billion for one month, twice", async () => {
@@ -228,9 +228,9 @@ describe("PEUPLE", () => {
       // await spent.isEqualTo(73697743125270);
       await stakePeuple(holder_1, halfBillion);
       // await spent.isEqualTo(130256001042048);
-      expect(await staking.connect(holder_1).computeHolderStake()).to.equal(
-        oneBillion
-      );
+      expect(
+        await staking.connect(holder_1).computeHolderTotalStakeAmount()
+      ).to.equal(oneBillion);
       expect(await staking.totalStaked()).to.equal(oneBillion);
     });
 
