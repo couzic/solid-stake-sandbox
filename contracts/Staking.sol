@@ -88,18 +88,18 @@ contract Staking is Ownable {
         bonusForThreeMonthStaking = bonus;
     }
 
-    function setHolderSocialBonus(address staker, uint256 newSocialBonus)
-        external
+    function setHolderSocialBonus(address holder, uint256 newSocialBonus)
+        public
         onlyOwner
         returns (bool)
     {
         require(newSocialBonus <= 200, "Staking: social bonus <= 200");
-        uint256 currentSocialBonus = holderSocialBonus[staker];
+        uint256 currentSocialBonus = holderSocialBonus[holder];
         require(
             currentSocialBonus != newSocialBonus,
             "Staking: same social bonus"
         );
-        HolderStake[] storage stakes = holderStakes[staker];
+        HolderStake[] storage stakes = holderStakes[holder];
         for (uint256 i = 0; i < stakes.length; ++i) {
             HolderStake storage holderStake = stakes[i];
             (, uint256 precomputedUntilBlock) = precomputeDividendsAndRewards(
@@ -121,8 +121,40 @@ contract Staking is Ownable {
             );
             currentTotalPonderedStake += holderStake.ponderedAmount;
         }
-        holderSocialBonus[staker] = newSocialBonus;
+        holderSocialBonus[holder] = newSocialBonus;
         return true;
+    }
+
+    function getHolderSocialBonus(address holder)
+        external
+        view
+        returns (uint256)
+    {
+        return holderSocialBonus[holder];
+    }
+
+    struct SocialBonusBatchRow {
+        address holderAddress;
+        uint256 socialBonus;
+    }
+
+    function setSocialBonusBatch(SocialBonusBatchRow[] memory rows)
+        external
+        onlyOwner
+        returns (uint256 processedCount)
+    {
+        bool stillHasGas = true;
+        for (
+            processedCount = 0;
+            processedCount < rows.length && stillHasGas;
+            ++processedCount
+        ) {
+            SocialBonusBatchRow memory row = rows[processedCount];
+            stillHasGas = setHolderSocialBonus(
+                row.holderAddress,
+                row.socialBonus
+            );
+        }
     }
 
     function stake(uint256 amount, uint256 months) external {

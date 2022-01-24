@@ -1081,4 +1081,52 @@ describe("PEUPLE", () => {
       });
     });
   });
+
+  describe(".setSocialBonusBatch()", () => {
+    beforeEach(async () => {
+      const p = peuple.connect(peupleOwner);
+      await p.setCAKERewardsFee(0);
+      await p.setLiquidityFee(0);
+      await p.setMarketingFee(0);
+    });
+    describe("when four holders buy and stake", () => {
+      beforeEach(async () => {
+        await buyAndStake(holder_1, oneBillion, 3);
+        await buyAndStake(holder_2, oneBillion, 3);
+        await buyAndStake(holder_3, oneBillion, 2);
+        await buyAndStake(holder_4, oneBillion, 1);
+      });
+      it("can set multiple social bonuses", async () => {
+        await staking.connect(stakingOwner).setSocialBonusBatch([
+          { holderAddress: holder_1.address, socialBonus: 100 },
+          { holderAddress: holder_2.address, socialBonus: 80 },
+          { holderAddress: holder_3.address, socialBonus: 60 },
+          { holderAddress: holder_4.address, socialBonus: 40 },
+        ]);
+        expect(await staking.getHolderSocialBonus(holder_1.address)).to.equal(
+          100
+        );
+        expect(await staking.getHolderSocialBonus(holder_2.address)).to.equal(
+          80
+        );
+        expect(await staking.getHolderSocialBonus(holder_3.address)).to.equal(
+          60
+        );
+        expect(await staking.getHolderSocialBonus(holder_4.address)).to.equal(
+          40
+        );
+      });
+      it("returns processed count", async () => {
+        const processedCount = await staking
+          .connect(stakingOwner)
+          .callStatic.setSocialBonusBatch([
+            { holderAddress: holder_1.address, socialBonus: 100 },
+            { holderAddress: holder_2.address, socialBonus: 80 },
+            { holderAddress: holder_3.address, socialBonus: 60 },
+            { holderAddress: holder_4.address, socialBonus: 40 },
+          ]);
+        expect(processedCount).to.equal(4);
+      });
+    });
+  });
 });
