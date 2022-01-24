@@ -332,10 +332,6 @@ contract Staking is Ownable {
         createNewBlock();
     }
 
-    function totalStaked() external view returns (uint256) {
-        return currentTotalStake;
-    }
-
     function computeHolderTotalStakeAmount() external view returns (uint256) {
         HolderStake[] storage stakes = holderStakes[msg.sender];
         uint256 total = 0;
@@ -539,8 +535,70 @@ contract Staking is Ownable {
         return amountToWithdraw;
     }
 
+    function stakeDividendsAndRewards(uint256 stakeIndex)
+        external
+        returns (uint256)
+    {
+        HolderStake storage holderStake = holderStakes[msg.sender][stakeIndex];
+        (
+            DividendsAndRewards memory dividendsAndRewards,
+            uint256 precomputedUntilBlock
+        ) = precomputeDividendsAndRewards(holderStake);
+        if (
+            precomputedUntilBlock != currentBlockNumber ||
+            // TODO Refine
+            gasleft() < 50000
+        ) return 0;
+        uint256 amountToStake = claimable(dividendsAndRewards) -
+            holderStake.withdrawn;
+        holderStake.withdrawn += amountToStake;
+        holderStake.amount += amountToStake;
+        currentTotalStake += amountToStake;
+        currentTotalPonderedStake -= holderStake.ponderedAmount;
+        holderStake.ponderedAmount = computePonderedStakeAmount(
+            holderStake.amount,
+            holderStake.timeBonus,
+            holderSocialBonus[msg.sender]
+        );
+        currentTotalPonderedStake += holderStake.ponderedAmount;
+        return amountToStake;
+    }
+
     function swapCakeForTokens(uint256 amount) internal returns (uint256) {
         IERC20(cake).approve(address(swapPool), amount);
         return swapPool.convertCakeIntoPeuple(address(this), amount);
+    }
+
+    function computeHolderStakeInfo(address holder, uint256 stakeIndex)
+        external
+        view
+        returns (
+            uint256 stakeAmount,
+            uint256 ponderedStakeAmount,
+            uint256 timeBonus,
+            uint256 startBlock,
+            uint256 blockedUntil,
+            uint256 computedUntilBlock,
+            uint256 dividends,
+            uint256 claimableRewards,
+            uint256 unclaimableRewards,
+            uint256 withdrawn
+        )
+    {
+        HolderStake storage holderStake = holderStakes[holder][stakeIndex];
+        stakeAmount = holderStake.amount;
+        ponderedStakeAmount = holderStake.ponderedAmount;
+        timeBonus = holderStake.timeBonus;
+        startBlock = holderStake.startBlock;
+        blockedUntil = holderStake.blockedUntil;
+        (
+            DividendsAndRewards memory dividendsAndRewards,
+            uint256 untilBlock
+        ) = computeDividendsAndRewardsFor(holderStake);
+        computedUntilBlock = untilBlock;
+        dividends = dividendsAndRewards.dividends;
+        claimableRewards = dividendsAndRewards.claimableRewards;
+        unclaimableRewards = dividendsAndRewards.unclaimableRewards;
+        withdrawn = holderStake.withdrawn;
     }
 }

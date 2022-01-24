@@ -220,7 +220,7 @@ describe("PEUPLE", () => {
       expect(
         await staking.connect(holder_1).computeHolderTotalStakeAmount()
       ).to.equal(ether(1));
-      expect(await staking.totalStaked()).to.equal(ether(1));
+      expect(await staking.currentTotalStake()).to.equal(ether(1));
     });
     it("stakes half a billion for one month, twice", async () => {
       // const spent = await expense(holder_1);
@@ -231,7 +231,7 @@ describe("PEUPLE", () => {
       expect(
         await staking.connect(holder_1).computeHolderTotalStakeAmount()
       ).to.equal(oneBillion);
-      expect(await staking.totalStaked()).to.equal(oneBillion);
+      expect(await staking.currentTotalStake()).to.equal(oneBillion);
     });
 
     describe("when first holder stakes all his peuple", () => {
@@ -1126,6 +1126,40 @@ describe("PEUPLE", () => {
             { holderAddress: holder_4.address, socialBonus: 40 },
           ]);
         expect(processedCount).to.equal(4);
+      });
+    });
+  });
+
+  describe("stakeDividendsAndRewards()", () => {
+    beforeEach(async () => {
+      const p = peuple.connect(peupleOwner);
+      await p.setCAKERewardsFee(0);
+      await p.setLiquidityFee(0);
+      await p.setMarketingFee(0);
+    });
+    describe("when single holder buys and stakes", () => {
+      beforeEach(async () => {
+        await buyAndStake(holder_1, oneBillion, 3);
+      });
+      describe("when one billion rewards received", () => {
+        beforeEach(async () => {
+          await sendPeupleRewards(oneBillion, 2);
+        });
+        it("can restake dividends and rewards", async () => {
+          await staking.connect(holder_1).stakeDividendsAndRewards(0);
+          const result = await staking.computeHolderStakeInfo(
+            holder_1.address,
+            0
+          );
+          expect(result.stakeAmount)
+            .to.equal(await staking.currentTotalStake())
+            .to.equal(oneBillion.mul(2));
+          expect(result.ponderedStakeAmount)
+            .to.equal(await staking.currentTotalPonderedStake())
+            .to.equal(oneBillion.mul(4));
+          expect(result.claimableRewards).to.equal(oneBillion);
+          expect(result.withdrawn).to.equal(oneBillion);
+        });
       });
     });
   });
