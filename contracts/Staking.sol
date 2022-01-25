@@ -4,7 +4,6 @@ pragma solidity ^0.8.0;
 import "./HitchensUnorderedAddressSet.sol";
 import "./OwnableStaking.sol";
 import "./PausableStaking.sol";
-import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "hardhat/console.sol";
 
@@ -12,7 +11,7 @@ import "./IUniswapV2Pair.sol";
 import "./IUniswapV2Factory.sol";
 import "./IUniswapV2Router.sol";
 
-contract Staking is Ownable, Pausable, ReentrancyGuard {
+contract Staking is Ownable, Pausable {
 
     using SafeERC20 for IERC20;
 
@@ -83,7 +82,7 @@ contract Staking is Ownable, Pausable, ReentrancyGuard {
     event RewardsReceived(uint cake);
     event StakingEnded();
 
-    constructor() Pausable() ReentrancyGuard() {
+    constructor() Pausable() {
         uniswapV2Router = IUniswapV2Router02(0x10ED43C718714eb63d5aA57B78B54704E256024E);
     }
 
@@ -248,6 +247,7 @@ contract Staking is Ownable, Pausable, ReentrancyGuard {
 
     function restake(uint256 stakeIndex, uint256 months)
         external
+        whenNotPaused
         returns (bool)
     {
         require(months > 0 && months < 4, "Restaking: 1, 2 or 3 months only");
@@ -337,7 +337,7 @@ contract Staking is Ownable, Pausable, ReentrancyGuard {
             currentPonderedStakeAmount;
     }
 
-    function unstake(uint256 stakeIndex) external nonReentrant returns (uint256) {
+    function unstake(uint256 stakeIndex) external whenNotPaused returns (uint256) {
         HolderStake[] storage stakes = holderStakes[msg.sender];
         HolderStake storage holderStake = stakes[stakeIndex];
         if (holderStake.blockedUntil < block.timestamp || decommissioned) {
@@ -555,6 +555,7 @@ contract Staking is Ownable, Pausable, ReentrancyGuard {
 
     function withdrawDividendsAndRewards(uint256 stakeIndex)
         external
+        whenNotPaused
         returns (uint256)
     {
         HolderStake storage holderStake = holderStakes[msg.sender][stakeIndex];
@@ -576,6 +577,7 @@ contract Staking is Ownable, Pausable, ReentrancyGuard {
 
     function withdrawDividendsAndRewardsAsCake(uint256 stakeIndex)
         external
+        whenNotPaused
         returns (uint256, uint256)
     {
         require (canWithdrawAsCake, "Cake withdrawal disabled");
@@ -599,6 +601,7 @@ contract Staking is Ownable, Pausable, ReentrancyGuard {
 
     function stakeDividendsAndRewards(uint256 stakeIndex)
         external
+        whenNotPaused
         returns (uint256)
     {
         HolderStake storage holderStake = holderStakes[msg.sender][stakeIndex];
