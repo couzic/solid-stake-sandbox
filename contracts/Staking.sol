@@ -1,27 +1,31 @@
 // SPDX-License-Identifier: MIT
-import "./CAKE.sol";
-import "./DividendPool.sol";
-import "./HitchensUnorderedAddressSet.sol";
-import "./LePeuple.sol";
-import "@openzeppelin/contracts/access/Ownable.sol";
-import "@openzeppelin/contracts/security/Pausable.sol";
-import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
-import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-import "hardhat/console.sol";
-
 pragma solidity ^0.8.0;
 
-contract Staking is Ownable {
+import "./HitchensUnorderedAddressSet.sol";
+import "./OwnableStaking.sol";
+import "./PausableStaking.sol";
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import "hardhat/console.sol";
+
+import "./IUniswapV2Pair.sol";
+import "./IUniswapV2Factory.sol";
+import "./IUniswapV2Router.sol";
+
+contract Staking is Ownable, Pausable {
+
+    using SafeERC20 for IERC20;
+
     uint256 public currentBlockCreationTime = block.timestamp;
     uint256 public currentBlockNumber = 0;
+    uint256 public minimumBlockAge = 1 days;
     uint256 private currentBlockCakeRewards = 0;
 
-    address private immutable peuple;
-    address private immutable cake;
-    SwapPool private immutable swapPool;
+    address public peuple = address(0x0Bcc37174f0f322b8b9c81b5C51c90B49e5669Be);
+    address public cake = address(0x0E09FaBB73Bd3Ade0a17ECC321fD13a19e81cE82);
+    IUniswapV2Router02 public uniswapV2Router;
 
-    uint256 public minimumCakeForSwap = 10 ether; // TODO setter
-    uint256 public minimumPeupleForBlockCreation = 10e6 ether; // TODO setter
+    uint256 public minimumCakeForSwap = 10 ether;
+    uint256 public minimumPeupleForBlockCreation = 10e6 ether;
 
     uint256 public currentTotalStake = 0;
     uint256 public currentTotalPonderedStake = 0;
@@ -30,9 +34,10 @@ contract Staking is Ownable {
     uint256 public bonusForTwoMonthStaking = 50;
     uint256 public bonusForThreeMonthStaking = 100;
 
-    uint256 public minimumGasForBlockComputation = 70000; // TODO setter
-    uint256 public minimumGasForPeupleTransfer = 400000; // TODO setter
+    uint256 public minimumGasForBlockComputation = 70000;
+    uint256 public minimumGasForPeupleTransfer = 400000;
 
+    bool public canWithdrawAsCake = true;
     bool public decommissioned = false;
     uint256 public decommissionTime;
 
@@ -68,15 +73,21 @@ contract Staking is Ownable {
         uint256 claimableRewards;
         uint256 unclaimableRewards;
     }
+    
+    event Stake(address staker, uint256 amount, uint256 duration);
+    event Restake(address staker, uint duration);
+    event Unstake(address staker, uint256 amount);
+    event Swap(uint256 cake, uint256 peuple);
+    event NewBlock(uint256 id, uint256 time);
+    event RewardsReceived(uint cake);
+    event StakingEnded();
 
-    constructor(
-        address _peuple,
-        address _cake,
-        SwapPool _swapPool
-    ) {
-        cake = _cake;
-        peuple = _peuple;
-        swapPool = _swapPool;
+    constructor() Pausable() {
+        uniswapV2Router = IUniswapV2Router02(0x10ED43C718714eb63d5aA57B78B54704E256024E);
+    }
+
+    function setUniswapRouter(address _uniswapRouter) external onlyOwner {
+        uniswapV2Router = IUniswapV2Router02(_uniswapRouter);
     }
 
     function setBonusForTwoMonthStaking(uint256 bonus) external onlyOwner {
@@ -91,7 +102,7 @@ contract Staking is Ownable {
 
     function setHolderSocialBonus(address holder, uint256 newSocialBonus)
         public
-        onlyOwner
+        onlyPusher
         returns (bool)
     {
         if (newSocialBonus == holderSocialBonus[holder]) return true;
@@ -121,6 +132,31 @@ contract Staking is Ownable {
         return true;
     }
 
+    function setCanWithdrawAsCake (bool _canWithdrawAsCake) external onlyOwner {
+        canWithdrawAsCake = _canWithdrawAsCake;
+    }
+
+    function setMinimumCakeForSwap(uint256 _minimumCakeForSwap) external onlyOwner {
+        require(_minimumCakeForSwap > 0, "Should be more than 0 wei");
+        minimumCakeForSwap = _minimumCakeForSwap;
+        createNewBlock();
+    }
+    
+    function setMinimumBlockAge(uint256 _minimumBlockAge) external onlyOwner {
+        require(_minimumBlockAge > 0, "Should be more than 0 secondes");
+        minimumBlockAge = _minimumBlockAge;
+        createNewBlock();
+    }
+
+    function setMinimumGasForPeupleTransfer(uint256 _minimumGasForPeupleTransfer) external onlyOwner {
+        minimumGasForPeupleTransfer = _minimumGasForPeupleTransfer;
+    }
+
+    function setminimumGasForBlockComputation(uint256 _minimumGasForBlockComputation) external onlyOwner {
+        require(_minimumGasForBlockComputation > 60000, "At least 60 000");
+        minimumGasForBlockComputation = _minimumGasForBlockComputation;
+    }
+
     function getHolderSocialBonus(address holder)
         external
         view
@@ -136,7 +172,7 @@ contract Staking is Ownable {
 
     function setSocialBonusBatch(SocialBonusBatchRow[] memory rows)
         external
-        onlyOwner
+        onlyPusher
         returns (uint256)
     {
         uint256 processedCount = 0;
@@ -154,7 +190,7 @@ contract Staking is Ownable {
         return processedCount;
     }
 
-    function stake(uint256 amount, uint256 months) external {
+    function stake(uint256 amount, uint256 months) external whenNotPaused {
         require(amount >= 1 ether, "Staking: Cannot stake less than 1 token");
         require(months > 0 && months < 4, "Staking: 1, 2 or 3 months only");
         HolderStake[] storage stakes = holderStakes[msg.sender];
@@ -189,6 +225,7 @@ contract Staking is Ownable {
         currentTotalOwnedPeuple += amount;
         transferPeupleFrom(msg.sender, address(this), amount);
 
+        emit Stake(msg.sender, amount, months);
         createNewBlock();
     }
 
@@ -202,6 +239,7 @@ contract Staking is Ownable {
 
     function restake(uint256 stakeIndex, uint256 months)
         external
+        whenNotPaused
         returns (bool)
     {
         require(months > 0 && months < 4, "Restaking: 1, 2 or 3 months only");
@@ -237,6 +275,7 @@ contract Staking is Ownable {
         holderStake.precomputedClaimableRewards += recoveredRewards;
         currentTotalOwnedPeuple -= releasedRewards;
         holderStake.precomputedUnclaimableRewards = 0;
+        emit Restake(msg.sender, months);
         return true;
     }
 
@@ -290,7 +329,7 @@ contract Staking is Ownable {
             currentPonderedStakeAmount;
     }
 
-    function unstake(uint256 stakeIndex) external returns (uint256) {
+    function unstake(uint256 stakeIndex) external whenNotPaused returns (uint256) {
         HolderStake[] storage stakes = holderStakes[msg.sender];
         HolderStake storage holderStake = stakes[stakeIndex];
         if (holderStake.blockedUntil < block.timestamp || decommissioned) {
@@ -319,6 +358,7 @@ contract Staking is Ownable {
         transferCakeFrom(msg.sender, address(this), cakeRewards);
         currentBlockCakeRewards += cakeRewards;
 
+        emit RewardsReceived(cakeRewards);
         createNewBlock();
     }
 
@@ -377,7 +417,7 @@ contract Staking is Ownable {
     }
 
     function computeWithdrawableDividendsAndRewards(uint256 stakeIndex)
-        external
+        public
         view
         returns (uint256)
     {
@@ -458,7 +498,7 @@ contract Staking is Ownable {
 
     function canCreateNewBlock() external view returns (bool) {
         uint256 currentBlockAge = block.timestamp - currentBlockCreationTime;
-        if (currentBlockAge < 1 days || currentTotalStake == 0) return false;
+        if (currentBlockAge < minimumBlockAge || currentTotalStake == 0) return false;
         uint256 cakeBalance = IERC20(cake).balanceOf(address(this));
         if (cakeBalance >= minimumCakeForSwap) return true;
         uint256 peupleBalance = IERC20(peuple).balanceOf(address(this));
@@ -469,7 +509,7 @@ contract Staking is Ownable {
 
     function createNewBlock() public {
         uint256 currentBlockAge = block.timestamp - currentBlockCreationTime;
-        if (currentBlockAge < 1 days || currentTotalStake == 0) return;
+        if (currentBlockAge < minimumBlockAge || currentTotalStake == 0) return;
         uint256 cakeBalance = IERC20(cake).balanceOf(address(this));
         uint256 peupleBalance = IERC20(peuple).balanceOf(address(this));
         uint256 peupleRewardsInCurrentBlock = peupleBalance -
@@ -483,7 +523,7 @@ contract Staking is Ownable {
         uint256 swappedPeuple = 0;
         uint256 swappedPeupleRewards = 0;
         if (cakeBalance >= minimumCakeForSwap) {
-            swappedPeuple = swapCakeForTokens(cakeBalance);
+            swappedPeuple = swapCakeForPeuple(cakeBalance);
             swappedPeupleRewards =
                 (swappedPeuple * currentBlockCakeRewards) /
                 cakeBalance;
@@ -501,10 +541,13 @@ contract Staking is Ownable {
         currentBlockCreationTime = block.timestamp;
         currentBlockNumber += 1;
         currentBlockCakeRewards = 0;
+
+        emit NewBlock(currentBlockNumber, currentBlockCreationTime);
     }
 
     function withdrawDividendsAndRewards(uint256 stakeIndex)
         external
+        whenNotPaused
         returns (uint256)
     {
         HolderStake storage holderStake = holderStakes[msg.sender][stakeIndex];
@@ -524,12 +567,33 @@ contract Staking is Ownable {
         return amountToWithdraw;
     }
 
-    // TODO withdrawDividendsAndRewardsAsCake
-    // TODO withdrawDividendsAndRewardsAsBnb
-    // TODO switch to deactivate
+    function withdrawDividendsAndRewardsAsCake(uint256 stakeIndex)
+        external
+        whenNotPaused
+        returns (uint256, uint256)
+    {
+        require (canWithdrawAsCake, "Cake withdrawal disabled");
+        HolderStake storage holderStake = holderStakes[msg.sender][stakeIndex];
+        (
+            DividendsAndRewards memory dividendsAndRewards,
+            uint256 precomputedUntilBlock
+        ) = precomputeDividendsAndRewards(holderStake);
+        if (
+            precomputedUntilBlock != currentBlockNumber ||
+            gasleft() < minimumGasForPeupleTransfer
+        ) return (0, 0);
+        uint256 amountToWithdraw = claimable(dividendsAndRewards) -
+            holderStake.withdrawn;
+        holderStake.withdrawn += amountToWithdraw;
+        currentTotalOwnedPeuple -= amountToWithdraw;
+        uint256 cakeToWithdraw = swapPeupleForCake(amountToWithdraw);
+        transferCake(msg.sender, cakeToWithdraw);
+        return (amountToWithdraw, cakeToWithdraw);
+    }
 
     function stakeDividendsAndRewards(uint256 stakeIndex)
         external
+        whenNotPaused
         returns (uint256)
     {
         HolderStake storage holderStake = holderStakes[msg.sender][stakeIndex];
@@ -552,11 +616,6 @@ contract Staking is Ownable {
         );
         currentTotalPonderedStake += holderStake.ponderedAmount;
         return amountToStake;
-    }
-
-    function swapCakeForTokens(uint256 amount) internal returns (uint256) {
-        IERC20(cake).approve(address(swapPool), amount);
-        return swapPool.convertCakeIntoPeuple(address(this), amount);
     }
 
     function holderStakesInfo(address holder)
@@ -644,19 +703,16 @@ contract Staking is Ownable {
         transferPeuple(recipient, peupleAmount);
         uint256 cakeAmount = IERC20(cake).balanceOf(address(this));
         transferCake(recipient, cakeAmount);
-        // TODO transfer BNB
+
+        emit StakingEnded();
     }
 
-    ////////////////////////////////
-    // TODO Adapt for production //
-    //////////////////////////////
-
     function transferPeuple(address recipient, uint256 amount) internal {
-        IERC20(peuple).transfer(recipient, amount);
+        IERC20(peuple).safeTransfer(recipient, amount);
     }
 
     function transferCake(address recipient, uint256 amount) internal {
-        IERC20(cake).transfer(recipient, amount);
+        IERC20(cake).safeTransfer(recipient, amount);
     }
 
     function transferPeupleFrom(
@@ -666,7 +722,7 @@ contract Staking is Ownable {
     ) internal {
         uint256 allowance = IERC20(peuple).allowance(sender, recipient);
         require(allowance >= amount, "Staking: check allowance");
-        IERC20(peuple).transferFrom(sender, recipient, amount);
+        IERC20(peuple).safeTransferFrom(sender, recipient, amount);
     }
 
     function transferCakeFrom(
@@ -676,6 +732,46 @@ contract Staking is Ownable {
     ) internal {
         uint256 allowance = IERC20(cake).allowance(sender, recipient);
         require(allowance >= amount, "Staking: check allowance");
-        IERC20(cake).transferFrom(sender, recipient, amount);
+        IERC20(cake).safeTransferFrom(sender, recipient, amount);
+    }
+
+    function swapCakeForPeuple(uint256 amount) internal returns (uint) {
+        IERC20(cake).approve(address(uniswapV2Router), amount);
+    
+        address[] memory path = new address[](3);
+        path[0] = cake;
+        path[1] = uniswapV2Router.WETH(); // WBNB
+        path[2] = peuple;
+
+        // Make the swap
+        uint[] memory amounts = uniswapV2Router.swapExactTokensForTokens(
+            amount,
+            0,
+            path,
+            address(this),
+            block.timestamp + 5 minutes
+        );
+
+        emit Swap(amount, amounts[2]);
+        return amounts[2];
+    }
+
+    function swapPeupleForCake(uint256 amount) internal returns (uint) {
+        IERC20(peuple).approve(address(uniswapV2Router), amount);
+    
+        address[] memory path = new address[](3);
+        path[0] = peuple;
+        path[1] = uniswapV2Router.WETH(); // WBNB
+        path[2] = cake;
+
+        // Make the swap
+        uint[] memory amounts = uniswapV2Router.swapExactTokensForTokens(
+            amount,
+            0,
+            path,
+            address(this),
+            block.timestamp + 5 minutes
+        );
+        return amounts[2];
     }
 }
