@@ -157,14 +157,6 @@ contract Staking is Ownable, Pausable {
         minimumGasForBlockComputation = _minimumGasForBlockComputation;
     }
 
-    function setPeupleAddress(address _peuple) external onlyOwner {
-        peuple = _peuple;
-    }
-
-    function setCakeAddress(address _cake) external onlyOwner {
-        cake = _cake;
-    }
-
     function getHolderSocialBonus(address holder)
         external
         view
@@ -180,7 +172,7 @@ contract Staking is Ownable, Pausable {
 
     function setSocialBonusBatch(SocialBonusBatchRow[] memory rows)
         external
-        onlyOwner
+        onlyPusher
         returns (uint256)
     {
         uint256 processedCount = 0;
