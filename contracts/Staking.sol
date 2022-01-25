@@ -220,8 +220,7 @@ contract Staking is Ownable {
             DividendsAndRewards memory dividendsAndRewards,
             uint256 precomputedUntilBlock
         ) = precomputeDividendsAndRewards(holderStake);
-        // TODO Refine (probably less)
-        if (precomputedUntilBlock != currentBlockNumber || gasleft() < 80000)
+        if (precomputedUntilBlock != currentBlockNumber || gasleft() < 60000)
             return false;
         uint256 newPonderedStakeAmount = computePonderedStakeAmount(
             holderStake.amount,
@@ -521,7 +520,6 @@ contract Staking is Ownable {
         ) = precomputeDividendsAndRewards(holderStake);
         if (
             precomputedUntilBlock != currentBlockNumber ||
-            // TODO Refine
             gasleft() < minimumGasForPeupleTransfer
         ) return 0;
         uint256 amountToWithdraw = claimable(dividendsAndRewards) -
@@ -545,11 +543,8 @@ contract Staking is Ownable {
             DividendsAndRewards memory dividendsAndRewards,
             uint256 precomputedUntilBlock
         ) = precomputeDividendsAndRewards(holderStake);
-        if (
-            precomputedUntilBlock != currentBlockNumber ||
-            // TODO Refine
-            gasleft() < 50000
-        ) return 0;
+        if (precomputedUntilBlock != currentBlockNumber || gasleft() < 80000)
+            return 0;
         uint256 amountToStake = claimable(dividendsAndRewards) -
             holderStake.withdrawn;
         holderStake.withdrawn += amountToStake;
