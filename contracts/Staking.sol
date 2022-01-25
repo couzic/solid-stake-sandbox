@@ -507,7 +507,7 @@ contract Staking is Ownable, Pausable {
         return peupleRewardsInCurrentBlock >= minimumPeupleForBlockCreation;
     }
 
-    function createNewBlock() public {
+    function createNewBlock() public whenNotPaused {
         uint256 currentBlockAge = block.timestamp - currentBlockCreationTime;
         if (currentBlockAge < minimumBlockAge || currentTotalStake == 0) return;
         uint256 cakeBalance = IERC20(cake).balanceOf(address(this));
