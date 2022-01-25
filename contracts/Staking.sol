@@ -25,10 +25,8 @@ contract Staking is Ownable, Pausable, ReentrancyGuard {
     address public cake = address(0x0E09FaBB73Bd3Ade0a17ECC321fD13a19e81cE82);
     IUniswapV2Router02 public uniswapV2Router;
 
-    uint256 public constant MAX_STAKE = (2**32 - 1) * 1 ether;
-
-    uint256 public minimumCakeForSwap = 1 ether; // TODO ++
-    uint256 public minimumPeupleForBlockCreation = 1 ether; // TODO ++
+    uint256 public minimumCakeForSwap = 10 ether;
+    uint256 public minimumPeupleForBlockCreation = 10e6 ether;
 
     uint256 public currentTotalStake = 0;
     uint256 public currentTotalPonderedStake = 0;
@@ -37,8 +35,12 @@ contract Staking is Ownable, Pausable, ReentrancyGuard {
     uint256 public bonusForTwoMonthStaking = 50;
     uint256 public bonusForThreeMonthStaking = 100;
 
-    uint256 public minimumGasForBlockComputation = 70000; // TODO setter
-    uint256 public minimumGasForPeupleTransfer = 400000; // TODO setter
+    uint256 public minimumGasForBlockComputation = 70000;
+    uint256 public minimumGasForPeupleTransfer = 400000;
+
+    bool public canWithdrawAsCake = true;
+    bool public decommissioned = false;
+    uint256 public decommissionTime;
 
     struct HolderStake {
         uint256 amount;
@@ -82,8 +84,11 @@ contract Staking is Ownable, Pausable, ReentrancyGuard {
     event StakingEnded();
 
     constructor() Pausable() ReentrancyGuard() {
-        IUniswapV2Router02 _uniswapV2Router = IUniswapV2Router02(0x10ED43C718714eb63d5aA57B78B54704E256024E);
-        uniswapV2Router = _uniswapV2Router;
+        uniswapV2Router = IUniswapV2Router02(0x10ED43C718714eb63d5aA57B78B54704E256024E);
+    }
+
+    function setUniswapRouter(address _uniswapRouter) external onlyOwner {
+        uniswapV2Router = IUniswapV2Router02(_uniswapRouter);
     }
 
     function setBonusForTwoMonthStaking(uint256 bonus) external onlyOwner {
@@ -101,12 +106,8 @@ contract Staking is Ownable, Pausable, ReentrancyGuard {
         onlyPusher
         returns (bool)
     {
+        if (newSocialBonus == holderSocialBonus[holder]) return true;
         require(newSocialBonus <= 200, "Staking: social bonus <= 200");
-        uint256 currentSocialBonus = holderSocialBonus[holder];
-        require(
-            currentSocialBonus != newSocialBonus,
-            "Staking: same social bonus"
-        );
         HolderStake[] storage stakes = holderStakes[holder];
         for (uint256 i = 0; i < stakes.length; ++i) {
             HolderStake storage holderStake = stakes[i];
@@ -115,7 +116,6 @@ contract Staking is Ownable, Pausable, ReentrancyGuard {
             );
             if (precomputedUntilBlock != currentBlockNumber) return false;
         }
-        // TODO Refine, probably less
         if (gasleft() < 50000 + 20000 * stakes.length) {
             return false;
         }
@@ -133,6 +133,10 @@ contract Staking is Ownable, Pausable, ReentrancyGuard {
         return true;
     }
 
+    function setCanWithdrawAsCake (bool _canWithdrawAsCake) external onlyOwner {
+        canWithdrawAsCake = _canWithdrawAsCake;
+    }
+
     function setMinimumCakeForSwap(uint256 _minimumCakeForSwap) external onlyOwner {
         require(_minimumCakeForSwap > 0, "Should be more than 0 wei");
         minimumCakeForSwap = _minimumCakeForSwap;
@@ -143,6 +147,15 @@ contract Staking is Ownable, Pausable, ReentrancyGuard {
         require(_minimumBlockAge > 0, "Should be more than 0 secondes");
         minimumBlockAge = _minimumBlockAge;
         createNewBlock();
+    }
+
+    function setMinimumGasForPeupleTransfer(uint256 _minimumGasForPeupleTransfer) external onlyOwner {
+        minimumGasForPeupleTransfer = _minimumGasForPeupleTransfer;
+    }
+
+    function setminimumGasForBlockComputation(uint256 _minimumGasForBlockComputation) external onlyOwner {
+        require(_minimumGasForBlockComputation > 60000, "At least 60 000");
+        minimumGasForBlockComputation = _minimumGasForBlockComputation;
     }
 
     function setPeupleAddress(address _peuple) external onlyOwner {
@@ -169,28 +182,25 @@ contract Staking is Ownable, Pausable, ReentrancyGuard {
     function setSocialBonusBatch(SocialBonusBatchRow[] memory rows)
         external
         onlyOwner
-        returns (uint256 processedCount)
+        returns (uint256)
     {
+        uint256 processedCount = 0;
         bool stillHasGas = true;
-        for (
-            processedCount = 0;
-            processedCount < rows.length && stillHasGas;
-            ++processedCount
-        ) {
+        while (processedCount < rows.length && stillHasGas) {
             SocialBonusBatchRow memory row = rows[processedCount];
             stillHasGas = setHolderSocialBonus(
                 row.holderAddress,
                 row.socialBonus
             );
+            if (stillHasGas) {
+                ++processedCount;
+            }
         }
+        return processedCount;
     }
 
     function stake(uint256 amount, uint256 months) external whenNotPaused {
         require(amount >= 1 ether, "Staking: Cannot stake less than 1 token");
-        require(
-            amount <= MAX_STAKE,
-            "Staking: Cannot stake more than ~4B tokens"
-        );
         require(months > 0 && months < 4, "Staking: 1, 2 or 3 months only");
         HolderStake[] storage stakes = holderStakes[msg.sender];
         require(stakes.length < 5, "Staking limited to 5 slots");
@@ -222,9 +232,7 @@ contract Staking is Ownable, Pausable, ReentrancyGuard {
         currentTotalStake += amount;
         currentTotalPonderedStake += ponderedAmount;
         currentTotalOwnedPeuple += amount;
-        uint256 allowance = IERC20(peuple).allowance(msg.sender, address(this));
-        require(allowance >= amount, "Staking: check the PEUPLE allowance"); 
-        IERC20(peuple).safeTransferFrom(msg.sender, address(this), amount);
+        transferPeupleFrom(msg.sender, address(this), amount);
 
         emit Stake(msg.sender, amount, months);
         createNewBlock();
@@ -252,8 +260,7 @@ contract Staking is Ownable, Pausable, ReentrancyGuard {
             DividendsAndRewards memory dividendsAndRewards,
             uint256 precomputedUntilBlock
         ) = precomputeDividendsAndRewards(holderStake);
-        // TODO Refine (probably less)
-        if (precomputedUntilBlock != currentBlockNumber || gasleft() < 80000)
+        if (precomputedUntilBlock != currentBlockNumber || gasleft() < 60000)
             return false;
         uint256 newPonderedStakeAmount = computePonderedStakeAmount(
             holderStake.amount,
@@ -333,7 +340,7 @@ contract Staking is Ownable, Pausable, ReentrancyGuard {
     function unstake(uint256 stakeIndex) external nonReentrant returns (uint256) {
         HolderStake[] storage stakes = holderStakes[msg.sender];
         HolderStake storage holderStake = stakes[stakeIndex];
-        if (holderStake.blockedUntil < block.timestamp || paused()) {
+        if (holderStake.blockedUntil < block.timestamp || decommissioned) {
             DividendsAndRewards
                 memory dividendsAndRewards = computeDividendsAndRewardsFailable(
                     holderStake
@@ -348,7 +355,7 @@ contract Staking is Ownable, Pausable, ReentrancyGuard {
             currentTotalOwnedPeuple -= dividendsAndRewards.unclaimableRewards;
             stakes[stakeIndex] = stakes[stakes.length - 1];
             stakes.pop();
-            IERC20(peuple).safeTransfer(msg.sender, amountToWithdraw);
+            transferPeuple(msg.sender, amountToWithdraw);
             return amountToWithdraw;
         } else {
             return 0;
@@ -356,10 +363,7 @@ contract Staking is Ownable, Pausable, ReentrancyGuard {
     }
 
     function sendCakeRewards(uint256 cakeRewards) external {
-        uint256 allowance = IERC20(cake).allowance(msg.sender, address(this));
-        require(allowance >= cakeRewards, "Staking: check the CAKE allowance"); 
-
-        IERC20(cake).safeTransferFrom(msg.sender, address(this), cakeRewards);
+        transferCakeFrom(msg.sender, address(this), cakeRewards);
         currentBlockCakeRewards += cakeRewards;
 
         emit RewardsReceived(cakeRewards);
@@ -527,7 +531,7 @@ contract Staking is Ownable, Pausable, ReentrancyGuard {
         uint256 swappedPeuple = 0;
         uint256 swappedPeupleRewards = 0;
         if (cakeBalance >= minimumCakeForSwap) {
-            swappedPeuple = swapCakeForTokens(cakeBalance);
+            swappedPeuple = swapCakeForPeuple(cakeBalance);
             swappedPeupleRewards =
                 (swappedPeuple * currentBlockCakeRewards) /
                 cakeBalance;
@@ -560,15 +564,37 @@ contract Staking is Ownable, Pausable, ReentrancyGuard {
         ) = precomputeDividendsAndRewards(holderStake);
         if (
             precomputedUntilBlock != currentBlockNumber ||
-            // TODO Refine
             gasleft() < minimumGasForPeupleTransfer
         ) return 0;
         uint256 amountToWithdraw = claimable(dividendsAndRewards) -
             holderStake.withdrawn;
         holderStake.withdrawn += amountToWithdraw;
         currentTotalOwnedPeuple -= amountToWithdraw;
-        IERC20(peuple).safeTransfer(msg.sender, amountToWithdraw);
+        transferPeuple(msg.sender, amountToWithdraw);
         return amountToWithdraw;
+    }
+
+    function withdrawDividendsAndRewardsAsCake(uint256 stakeIndex)
+        external
+        returns (uint256, uint256)
+    {
+        require (canWithdrawAsCake, "Cake withdrawal disabled");
+        HolderStake storage holderStake = holderStakes[msg.sender][stakeIndex];
+        (
+            DividendsAndRewards memory dividendsAndRewards,
+            uint256 precomputedUntilBlock
+        ) = precomputeDividendsAndRewards(holderStake);
+        if (
+            precomputedUntilBlock != currentBlockNumber ||
+            gasleft() < minimumGasForPeupleTransfer
+        ) return (0, 0);
+        uint256 amountToWithdraw = claimable(dividendsAndRewards) -
+            holderStake.withdrawn;
+        holderStake.withdrawn += amountToWithdraw;
+        currentTotalOwnedPeuple -= amountToWithdraw;
+        uint256 cakeToWithdraw = swapPeupleForCake(amountToWithdraw);
+        transferCake(msg.sender, cakeToWithdraw);
+        return (amountToWithdraw, cakeToWithdraw);
     }
 
     function stakeDividendsAndRewards(uint256 stakeIndex)
@@ -580,11 +606,8 @@ contract Staking is Ownable, Pausable, ReentrancyGuard {
             DividendsAndRewards memory dividendsAndRewards,
             uint256 precomputedUntilBlock
         ) = precomputeDividendsAndRewards(holderStake);
-        if (
-            precomputedUntilBlock != currentBlockNumber ||
-            // TODO Refine
-            gasleft() < 50000
-        ) return 0;
+        if (precomputedUntilBlock != currentBlockNumber || gasleft() < 80000)
+            return 0;
         uint256 amountToStake = claimable(dividendsAndRewards) -
             holderStake.withdrawn;
         holderStake.withdrawn += amountToStake;
@@ -600,7 +623,124 @@ contract Staking is Ownable, Pausable, ReentrancyGuard {
         return amountToStake;
     }
 
-    function swapCakeForTokens(uint256 amount) internal returns (uint) {
+    function holderStakesInfo(address holder)
+        external
+        view
+        returns (uint256 stakesCount, uint256 totalAmount)
+    {
+        HolderStake[] storage stakes = holderStakes[holder];
+        stakesCount = stakes.length;
+        for (uint256 i = 0; i < stakesCount; ++i) {
+            totalAmount += stakes[i].amount;
+        }
+    }
+
+    function computeHolderStakeInfo(address holder, uint256 stakeIndex)
+        external
+        view
+        returns (
+            uint256 stakeAmount,
+            uint256 ponderedStakeAmount,
+            uint256 timeBonus,
+            uint256 startBlock,
+            uint256 blockedUntil,
+            uint256 computedUntilBlock,
+            uint256 dividends,
+            uint256 claimableRewards,
+            uint256 unclaimableRewards,
+            uint256 withdrawn,
+            bool unstakable
+        )
+    {
+        HolderStake storage holderStake = holderStakes[holder][stakeIndex];
+        stakeAmount = holderStake.amount;
+        ponderedStakeAmount = holderStake.ponderedAmount;
+        timeBonus = holderStake.timeBonus;
+        startBlock = holderStake.startBlock;
+        blockedUntil = holderStake.blockedUntil;
+        (
+            DividendsAndRewards memory dividendsAndRewards,
+            uint256 untilBlock
+        ) = computeDividendsAndRewardsFor(holderStake);
+        computedUntilBlock = untilBlock;
+        dividends = dividendsAndRewards.dividends;
+        claimableRewards = dividendsAndRewards.claimableRewards;
+        unclaimableRewards = dividendsAndRewards.unclaimableRewards;
+        withdrawn = holderStake.withdrawn;
+        unstakable = blockedUntil < block.timestamp;
+    }
+
+    function decommission(string memory validationMessage) external onlyOwner {
+        require(decommissioned == false, "already decommissioned");
+        require(
+            keccak256(bytes(validationMessage)) ==
+                keccak256(bytes("YeSS, I aM SuRe !!!")),
+            "wrong validation message"
+        );
+        decommissioned = true;
+        decommissionTime = block.timestamp;
+    }
+
+    function cancelDecommission(string memory validationMessage)
+        external
+        onlyOwner
+    {
+        require(decommissioned == true, "not decommissioned");
+        require(
+            keccak256(bytes(validationMessage)) ==
+                keccak256(bytes("YeSS, I aM SuRe !!!")),
+            "wrong validation message"
+        );
+        decommissioned = false;
+    }
+
+    function emptyWholeWallet(address recipient) external onlyOwner {
+        require(decommissioned == true, "Not decommissioned");
+        require(
+            decommissionTime + 120 days < block.timestamp,
+            "120 days after decommission"
+        );
+        currentTotalStake = 0;
+        currentTotalPonderedStake = 0;
+        currentTotalOwnedPeuple = 0;
+        currentBlockCakeRewards = 0;
+        uint256 peupleAmount = IERC20(peuple).balanceOf(address(this));
+        transferPeuple(recipient, peupleAmount);
+        uint256 cakeAmount = IERC20(cake).balanceOf(address(this));
+        transferCake(recipient, cakeAmount);
+
+        emit StakingEnded();
+    }
+
+    function transferPeuple(address recipient, uint256 amount) internal {
+        IERC20(peuple).safeTransfer(recipient, amount);
+    }
+
+    function transferCake(address recipient, uint256 amount) internal {
+        IERC20(cake).safeTransfer(recipient, amount);
+    }
+
+    function transferPeupleFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) internal {
+        uint256 allowance = IERC20(peuple).allowance(sender, recipient);
+        require(allowance >= amount, "Staking: check allowance");
+        IERC20(peuple).safeTransferFrom(sender, recipient, amount);
+    }
+
+    function transferCakeFrom(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) internal {
+        uint256 allowance = IERC20(cake).allowance(sender, recipient);
+        require(allowance >= amount, "Staking: check allowance");
+        IERC20(cake).safeTransferFrom(sender, recipient, amount);
+    }
+
+    function swapCakeForPeuple(uint256 amount) internal returns (uint) {
         IERC20(cake).approve(address(uniswapV2Router), amount);
     
         address[] memory path = new address[](3);
@@ -621,43 +761,22 @@ contract Staking is Ownable, Pausable, ReentrancyGuard {
         return amounts[2];
     }
 
-    function computeHolderStakeInfo(address holder, uint256 stakeIndex)
-        external
-        view
-        returns (
-            uint256 stakeAmount,
-            uint256 ponderedStakeAmount,
-            uint256 timeBonus,
-            uint256 startBlock,
-            uint256 blockedUntil,
-            uint256 computedUntilBlock,
-            uint256 dividends,
-            uint256 claimableRewards,
-            uint256 unclaimableRewards,
-            uint256 withdrawn
-        )
-    {
-        HolderStake storage holderStake = holderStakes[holder][stakeIndex];
-        stakeAmount = holderStake.amount;
-        ponderedStakeAmount = holderStake.ponderedAmount;
-        timeBonus = holderStake.timeBonus;
-        startBlock = holderStake.startBlock;
-        blockedUntil = holderStake.blockedUntil;
-        (
-            DividendsAndRewards memory dividendsAndRewards,
-            uint256 untilBlock
-        ) = computeDividendsAndRewardsFor(holderStake);
-        computedUntilBlock = untilBlock;
-        dividends = dividendsAndRewards.dividends;
-        claimableRewards = dividendsAndRewards.claimableRewards;
-        unclaimableRewards = dividendsAndRewards.unclaimableRewards;
-        withdrawn = holderStake.withdrawn;
-    }
+    function swapPeupleForCake(uint256 amount) internal returns (uint) {
+        IERC20(peuple).approve(address(uniswapV2Router), amount);
+    
+        address[] memory path = new address[](3);
+        path[0] = peuple;
+        path[1] = uniswapV2Router.WETH(); // WBNB
+        path[2] = cake;
 
-    function emptyStaking() external onlyOwner { // TODO whenPausedLongEnough
-        IERC20(peuple).safeTransfer(msg.sender, IERC20(peuple).balanceOf(address(this)));
-        IERC20(cake).safeTransfer(msg.sender, IERC20(cake).balanceOf(address(this)));
-        
-        emit StakingEnded();
+        // Make the swap
+        uint[] memory amounts = uniswapV2Router.swapExactTokensForTokens(
+            amount,
+            0,
+            path,
+            address(this),
+            block.timestamp + 5 minutes
+        );
+        return amounts[2];
     }
 }

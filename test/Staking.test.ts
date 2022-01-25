@@ -20,14 +20,14 @@ const oneMillion = _10_18.mul(1_000_000);
 const oneThousand = _10_18.mul(1_000);
 const tenThousand = oneThousand.mul(10);
 
-const MAX_STAKE = ether(2 ** 32 - 1);
-
 const expense = async (wallet: SignerWithAddress) => {
   const initialBalance = await wallet.getBalance();
   return {
     isEqualTo: async (maxSpent: number) => {
       const newBalance = await wallet.getBalance();
-      expect(initialBalance.sub(newBalance).toNumber()).to.equal(maxSpent);
+      expect(
+        initialBalance.sub(newBalance).div(1_000_000_000_000).toNumber()
+      ).to.equal(maxSpent);
     },
   };
 };
@@ -171,7 +171,7 @@ describe("PEUPLE", () => {
     const cakeSupply = await cake.totalSupply();
     expect(cakeSupply).to.equal(oneMillion.mul(100));
   });
-  it("stakes max stake", async () => {
+  it("stakes 5 billion", async () => {
     await cake.transfer(holder_1.address, tenThousand);
     expect(await cake.balanceOf(holder_1.address)).to.equal(tenThousand);
     await cake.connect(holder_1).approve(swapPool.address, tenThousand);
@@ -179,7 +179,7 @@ describe("PEUPLE", () => {
     expect(await peuple.balanceOf(holder_1.address)).to.equal(
       oneBillion.mul(5)
     );
-    await stakePeuple(holder_1, MAX_STAKE);
+    await stakePeuple(holder_1, oneBillion.mul(5));
   });
   it("does not create block when no stakers", async () => {
     await days(2);
@@ -197,11 +197,6 @@ describe("PEUPLE", () => {
     });
     it("rejects null amount", async () => {
       await expect(stakePeuple(holder_1, BigNumber.from(0))).to.be.rejectedWith(
-        Error
-      );
-    });
-    it("rejects too big amount", async () => {
-      await expect(stakePeuple(holder_1, MAX_STAKE.add(1))).to.be.rejectedWith(
         Error
       );
     });
@@ -225,9 +220,9 @@ describe("PEUPLE", () => {
     it("stakes half a billion for one month, twice", async () => {
       // const spent = await expense(holder_1);
       await stakePeuple(holder_1, halfBillion);
-      // await spent.isEqualTo(73697743125270);
+      // await spent.isEqualTo(902);
       await stakePeuple(holder_1, halfBillion);
-      // await spent.isEqualTo(130256001042048);
+      // await spent.isEqualTo(1226);
       expect(
         await staking.connect(holder_1).computeHolderTotalStakeAmount()
       ).to.equal(oneBillion);
@@ -1130,7 +1125,7 @@ describe("PEUPLE", () => {
     });
   });
 
-  describe("stakeDividendsAndRewards()", () => {
+  describe(".stakeDividendsAndRewards()", () => {
     beforeEach(async () => {
       const p = peuple.connect(peupleOwner);
       await p.setCAKERewardsFee(0);
@@ -1159,6 +1154,124 @@ describe("PEUPLE", () => {
             .to.equal(oneBillion.mul(4));
           expect(result.claimableRewards).to.equal(oneBillion);
           expect(result.withdrawn).to.equal(oneBillion);
+        });
+      });
+    });
+  });
+
+  describe(".decommission()", () => {
+    beforeEach(async () => {
+      const p = peuple.connect(peupleOwner);
+      await p.setCAKERewardsFee(0);
+      await p.setLiquidityFee(0);
+      await p.setMarketingFee(0);
+    });
+    describe("when single holder buys and stakes", () => {
+      beforeEach(async () => {
+        await buyAndStake(holder_1, oneBillion, 3);
+      });
+      describe("when one billion rewards received", () => {
+        beforeEach(async () => {
+          await sendPeupleRewards(oneBillion, 2);
+        });
+        it("can not empty staking wallet", async () => {
+          await expect(
+            staking.connect(stakingOwner).emptyWholeWallet(holder_4.address)
+          ).to.be.rejectedWith(Error);
+        });
+        it("can not decommission with wrong validation message", async () => {
+          await expect(
+            staking
+              .connect(stakingOwner)
+              .decommission("wrong validation message")
+          ).to.be.rejectedWith(Error);
+        });
+        it("can not be decommissioned by non-owner", async () => {
+          await expect(
+            staking.connect(holder_1).decommission("YeSS, I aM SuRe !!!")
+          ).to.be.rejectedWith(Error);
+        });
+        describe("when decommissioned", () => {
+          beforeEach(async () => {
+            await staking
+              .connect(stakingOwner)
+              .decommission("YeSS, I aM SuRe !!!");
+          });
+          it("can not empty staking wallet", async () => {
+            await expect(
+              staking.connect(stakingOwner).emptyWholeWallet(holder_4.address)
+            ).to.be.rejectedWith(Error);
+          });
+          it("can not be decommission twice", async () => {
+            await expect(
+              staking.connect(stakingOwner).decommission("YeSS, I aM SuRe !!!")
+            ).to.be.rejectedWith(Error);
+          });
+          it("allows holders to unstake even if staking period not finished", async () => {
+            await staking.connect(holder_1).unstake(0);
+            expect(await peuple.balanceOf(holder_1.address)).to.equal(
+              oneBillion.mul(2)
+            );
+          });
+          it("can not cancel decommission with wrong validation message", async () => {
+            await expect(
+              staking
+                .connect(stakingOwner)
+                .cancelDecommission("wrong validation message")
+            ).to.be.rejectedWith(Error);
+          });
+          it("can not cancel decommission by non-owner", async () => {
+            await expect(
+              staking
+                .connect(holder_1)
+                .cancelDecommission("YeSS, I aM SuRe !!!")
+            ).to.be.rejectedWith(Error);
+          });
+          describe("when decommission canceled", () => {
+            beforeEach(async () => {
+              await staking
+                .connect(stakingOwner)
+                .cancelDecommission("YeSS, I aM SuRe !!!");
+            });
+            it("can not empty staking wallet", async () => {
+              await expect(
+                staking.connect(stakingOwner).emptyWholeWallet(holder_4.address)
+              ).to.be.rejectedWith(Error);
+            });
+            it("can not unstake before staking period is over anymore", async () => {
+              await staking.connect(holder_1).unstake(0);
+              expect(await peuple.balanceOf(holder_1.address)).to.equal(0);
+            });
+            it("can not cancel decommission again", async () => {
+              await expect(
+                staking
+                  .connect(stakingOwner)
+                  .cancelDecommission("YeSS, I aM SuRe !!!")
+              ).to.be.rejectedWith(Error);
+            });
+          });
+          describe("after 120 days", () => {
+            beforeEach(async () => {
+              await days(120);
+            });
+            it("can empty staking wallet", async () => {
+              await staking
+                .connect(stakingOwner)
+                .emptyWholeWallet(holder_4.address);
+              expect(await peuple.balanceOf(holder_4.address)).to.equal(
+                oneBillion.mul(2)
+              );
+              expect(await peuple.balanceOf(staking.address)).to.equal(0);
+              expect(await staking.currentTotalStake()).to.equal(0);
+              expect(await staking.currentTotalPonderedStake()).to.equal(0);
+              expect(await staking.currentTotalOwnedPeuple()).to.equal(0);
+            });
+            it("can not empty whole wallet when not owner", async () => {
+              await expect(
+                staking.connect(holder_4).emptyWholeWallet(holder_4.address)
+              ).to.be.rejectedWith(Error);
+            });
+          });
         });
       });
     });
