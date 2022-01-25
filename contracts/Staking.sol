@@ -570,6 +570,18 @@ contract Staking is Ownable {
         return swapPool.convertCakeIntoPeuple(address(this), amount);
     }
 
+    function holderStakesInfo(address holder)
+        external
+        view
+        returns (uint256 stakesCount, uint256 totalAmount)
+    {
+        HolderStake[] storage stakes = holderStakes[holder];
+        stakesCount = stakes.length;
+        for (uint256 i = 0; i < stakesCount; ++i) {
+            totalAmount += stakes[i].amount;
+        }
+    }
+
     function computeHolderStakeInfo(address holder, uint256 stakeIndex)
         external
         view
@@ -583,7 +595,8 @@ contract Staking is Ownable {
             uint256 dividends,
             uint256 claimableRewards,
             uint256 unclaimableRewards,
-            uint256 withdrawn
+            uint256 withdrawn,
+            bool unstakable
         )
     {
         HolderStake storage holderStake = holderStakes[holder][stakeIndex];
@@ -601,6 +614,7 @@ contract Staking is Ownable {
         claimableRewards = dividendsAndRewards.claimableRewards;
         unclaimableRewards = dividendsAndRewards.unclaimableRewards;
         withdrawn = holderStake.withdrawn;
+        unstakable = blockedUntil < block.timestamp;
     }
 
     function decommission(string memory validationMessage) external onlyOwner {
