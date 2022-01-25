@@ -20,8 +20,6 @@ contract Staking is Ownable {
     address private immutable cake;
     SwapPool private immutable swapPool;
 
-    uint256 public constant MAX_STAKE = (2**32 - 1) * 1 ether;
-
     uint256 public minimumCakeForSwap = 10 ether; // TODO setter
     uint256 public minimumPeupleForBlockCreation = 10e6 ether; // TODO setter
 
@@ -158,10 +156,6 @@ contract Staking is Ownable {
 
     function stake(uint256 amount, uint256 months) external {
         require(amount >= 1 ether, "Staking: Cannot stake less than 1 token");
-        require(
-            amount <= MAX_STAKE,
-            "Staking: Cannot stake more than ~4B tokens"
-        );
         require(months > 0 && months < 4, "Staking: 1, 2 or 3 months only");
         HolderStake[] storage stakes = holderStakes[msg.sender];
         require(stakes.length < 5, "Staking limited to 5 slots");

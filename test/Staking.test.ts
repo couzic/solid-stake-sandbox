@@ -20,14 +20,14 @@ const oneMillion = _10_18.mul(1_000_000);
 const oneThousand = _10_18.mul(1_000);
 const tenThousand = oneThousand.mul(10);
 
-const MAX_STAKE = ether(2 ** 32 - 1);
-
 const expense = async (wallet: SignerWithAddress) => {
   const initialBalance = await wallet.getBalance();
   return {
     isEqualTo: async (maxSpent: number) => {
       const newBalance = await wallet.getBalance();
-      expect(initialBalance.sub(newBalance).toNumber()).to.equal(maxSpent);
+      expect(
+        initialBalance.sub(newBalance).div(1_000_000_000_000).toNumber()
+      ).to.equal(maxSpent);
     },
   };
 };
@@ -171,7 +171,7 @@ describe("PEUPLE", () => {
     const cakeSupply = await cake.totalSupply();
     expect(cakeSupply).to.equal(oneMillion.mul(100));
   });
-  it("stakes max stake", async () => {
+  it("stakes 5 billion", async () => {
     await cake.transfer(holder_1.address, tenThousand);
     expect(await cake.balanceOf(holder_1.address)).to.equal(tenThousand);
     await cake.connect(holder_1).approve(swapPool.address, tenThousand);
@@ -179,7 +179,7 @@ describe("PEUPLE", () => {
     expect(await peuple.balanceOf(holder_1.address)).to.equal(
       oneBillion.mul(5)
     );
-    await stakePeuple(holder_1, MAX_STAKE);
+    await stakePeuple(holder_1, oneBillion.mul(5));
   });
   it("does not create block when no stakers", async () => {
     await days(2);
@@ -197,11 +197,6 @@ describe("PEUPLE", () => {
     });
     it("rejects null amount", async () => {
       await expect(stakePeuple(holder_1, BigNumber.from(0))).to.be.rejectedWith(
-        Error
-      );
-    });
-    it("rejects too big amount", async () => {
-      await expect(stakePeuple(holder_1, MAX_STAKE.add(1))).to.be.rejectedWith(
         Error
       );
     });
@@ -225,9 +220,9 @@ describe("PEUPLE", () => {
     it("stakes half a billion for one month, twice", async () => {
       // const spent = await expense(holder_1);
       await stakePeuple(holder_1, halfBillion);
-      // await spent.isEqualTo(73697743125270);
+      // await spent.isEqualTo(902);
       await stakePeuple(holder_1, halfBillion);
-      // await spent.isEqualTo(130256001042048);
+      // await spent.isEqualTo(1226);
       expect(
         await staking.connect(holder_1).computeHolderTotalStakeAmount()
       ).to.equal(oneBillion);
